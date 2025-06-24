@@ -5,16 +5,10 @@ import numpy as np
 import threading
 import time
 import os
-import uuid
 import logging
-import queue
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 from django.conf import settings
 from django.utils import timezone
-from django.db import transaction
 import torch
-
 from cameras.models import Camera
 from alerts.models import Alert
 from detectors import FireSmokeDetector, FallDetector, ViolenceDetector, ChokingDetector
