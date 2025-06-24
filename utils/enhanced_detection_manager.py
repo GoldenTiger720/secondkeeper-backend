@@ -959,7 +959,7 @@ class VideoFileProcessor:
         """Process a single frame with all detectors and create test alerts"""
         try:
             # Check each detector
-            detectors_to_run = ['fire_smoke', 'fall', 'violence']
+            detectors_to_run = ['fire_smoke']
 
             for detector_type in detectors_to_run:
                 try:
