@@ -235,6 +235,7 @@ MODEL_PATHS = {
     'violence': os.path.join(BASE_DIR, 'models', 'violence.pt'),
     'choking': os.path.join(BASE_DIR, 'models', 'yolov8m-pose.pt'),
     'person': os.path.join(BASE_DIR, 'models', 'yolov8m.pt'),
+    'pose_model': os.path.join(BASE_DIR, 'models', 'yolo11m-pose.pt'),
 }
 
 # Video and image storage settings

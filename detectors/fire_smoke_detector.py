@@ -1,4 +1,4 @@
-from .base_detector import BaseDetector
+from .base_detector1 import BaseDetector
 from .tensorrt_detector import TensorRTDetector
 from django.conf import settings
 import os

@@ -1,5 +1,5 @@
 import os
-from detectors import FireSmokeDetector, FallDetector, ViolenceDetector, ChokingDetector, PersonDetector  
+from detectors import FireSmokeDetector, FallDetector, ViolenceDetector, ChokingDetector
 from django.conf import settings
 import logging
 
@@ -15,7 +15,6 @@ class ModelManager:
             "fall": FallDetector(),
             "violence": ViolenceDetector(),
             "choking": ChokingDetector(),
-            "person": PersonDetector()
         }
         
         # Current active detector

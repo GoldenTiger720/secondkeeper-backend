@@ -170,31 +170,32 @@ def add_test_detection_support(video_processor_class):
             return False
     
     def _extract_bounding_boxes_patch(self, detection_results):
-        """Extract bounding boxes from YOLO detection results"""
+        """Extract bounding boxes from YOLO detection results with safe attribute access"""
         bboxes = []
         
         try:
             for r in detection_results:
                 if r.boxes is not None and len(r.boxes) > 0:
-                    boxes = r.boxes.xyxy.cpu().numpy()  # Get boxes in xyxy format
-                    confidences = r.boxes.conf.cpu().numpy()
+                    # Safe extraction of boxes with multiple fallback methods
+                    boxes = self._safe_extract_boxes_patch(r.boxes)
+                    confidences = self._safe_extract_confidences_patch(r.boxes)
+                    classes = self._safe_extract_classes_patch(r.boxes, len(boxes))
                     
-                    if hasattr(r.boxes, 'cls'):
-                        classes = r.boxes.cls.cpu().numpy()
-                    else:
-                        classes = [0] * len(boxes)  # Default class if not available
+                    if len(boxes) == 0:
+                        continue
                     
                     for i, (box, conf, cls) in enumerate(zip(boxes, confidences, classes)):
-                        x1, y1, x2, y2 = box.astype(int)
-                        bboxes.append({
-                            'x1': x1,
-                            'y1': y1,
-                            'x2': x2,
-                            'y2': y2,
-                            'confidence': float(conf),
-                            'class': int(cls),
-                            'class_name': r.names.get(int(cls), 'detection') if hasattr(r, 'names') else 'detection'
-                        })
+                        if len(box) >= 4:  # Ensure we have x1, y1, x2, y2
+                            x1, y1, x2, y2 = box[:4].astype(int)
+                            bboxes.append({
+                                'x1': x1,
+                                'y1': y1,
+                                'x2': x2,
+                                'y2': y2,
+                                'confidence': float(conf) if conf is not None else 0.5,
+                                'class': int(cls) if cls is not None else 0,
+                                'class_name': self._get_class_name_patch(r, int(cls) if cls is not None else 0)
+                            })
                         
         except Exception as e:
             import logging
@@ -202,6 +203,117 @@ def add_test_detection_support(video_processor_class):
             logger.error(f"Error extracting bounding boxes: {str(e)}")
             
         return bboxes
+    
+    def _safe_extract_boxes_patch(self, boxes_obj):
+        """Safely extract box coordinates from YOLO boxes object"""
+        try:
+            # Try different ways to access box coordinates
+            if hasattr(boxes_obj, 'xyxy'):
+                if hasattr(boxes_obj.xyxy, 'cpu'):
+                    return boxes_obj.xyxy.cpu().numpy()
+                else:
+                    return np.array(boxes_obj.xyxy)
+            elif hasattr(boxes_obj, 'data'):
+                if hasattr(boxes_obj.data, 'cpu'):
+                    data = boxes_obj.data.cpu().numpy()
+                else:
+                    data = np.array(boxes_obj.data)
+                # Data format is usually [x1, y1, x2, y2, conf, cls]
+                return data[:, :4]  # Take only the box coordinates
+            elif hasattr(boxes_obj, 'xywh'):
+                # Convert from xywh to xyxy format
+                if hasattr(boxes_obj.xywh, 'cpu'):
+                    xywh = boxes_obj.xywh.cpu().numpy()
+                else:
+                    xywh = np.array(boxes_obj.xywh)
+                # Convert xywh to xyxy
+                xyxy = np.zeros_like(xywh)
+                xyxy[:, 0] = xywh[:, 0] - xywh[:, 2] / 2  # x1
+                xyxy[:, 1] = xywh[:, 1] - xywh[:, 3] / 2  # y1
+                xyxy[:, 2] = xywh[:, 0] + xywh[:, 2] / 2  # x2
+                xyxy[:, 3] = xywh[:, 1] + xywh[:, 3] / 2  # y2
+                return xyxy
+            else:
+                import logging
+                logger = logging.getLogger('security_ai')
+                logger.warning("Could not find box coordinates in boxes object")
+                return np.array([])
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('security_ai')
+            logger.error(f"Error extracting box coordinates: {str(e)}")
+            return np.array([])
+    
+    def _safe_extract_confidences_patch(self, boxes_obj):
+        """Safely extract confidence scores from YOLO boxes object"""
+        try:
+            if hasattr(boxes_obj, 'conf'):
+                if hasattr(boxes_obj.conf, 'cpu'):
+                    return boxes_obj.conf.cpu().numpy()
+                else:
+                    return np.array(boxes_obj.conf)
+            elif hasattr(boxes_obj, 'data'):
+                if hasattr(boxes_obj.data, 'cpu'):
+                    data = boxes_obj.data.cpu().numpy()
+                else:
+                    data = np.array(boxes_obj.data)
+                # Data format is usually [x1, y1, x2, y2, conf, cls]
+                if data.shape[1] > 4:
+                    return data[:, 4]  # Take confidence column
+                else:
+                    return np.ones(len(data)) * 0.5  # Default confidence
+            else:
+                import logging
+                logger = logging.getLogger('security_ai')
+                logger.warning("Could not find confidence scores in boxes object")
+                return np.array([])
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('security_ai')
+            logger.error(f"Error extracting confidence scores: {str(e)}")
+            return np.array([])
+    
+    def _safe_extract_classes_patch(self, boxes_obj, num_boxes):
+        """Safely extract class IDs from YOLO boxes object"""
+        try:
+            if hasattr(boxes_obj, 'cls'):
+                if hasattr(boxes_obj.cls, 'cpu'):
+                    return boxes_obj.cls.cpu().numpy()
+                else:
+                    return np.array(boxes_obj.cls)
+            elif hasattr(boxes_obj, 'data'):
+                if hasattr(boxes_obj.data, 'cpu'):
+                    data = boxes_obj.data.cpu().numpy()
+                else:
+                    data = np.array(boxes_obj.data)
+                # Data format is usually [x1, y1, x2, y2, conf, cls]
+                if data.shape[1] > 5:
+                    return data[:, 5]  # Take class column
+                else:
+                    return np.zeros(len(data))  # Default class 0
+            else:
+                import logging
+                logger = logging.getLogger('security_ai')
+                logger.warning("Could not find class IDs in boxes object")
+                return np.zeros(num_boxes)  # Default to class 0
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('security_ai')
+            logger.error(f"Error extracting class IDs: {str(e)}")
+            return np.zeros(num_boxes)
+    
+    def _get_class_name_patch(self, result_obj, class_id):
+        """Safely get class name from result object"""
+        try:
+            if hasattr(result_obj, 'names') and result_obj.names:
+                return result_obj.names.get(class_id, f'class_{class_id}')
+            else:
+                return 'detection'
+        except Exception as e:
+            import logging
+            logger = logging.getLogger('security_ai')
+            logger.error(f"Error getting class name: {str(e)}")
+            return 'detection'
     
     def _draw_bounding_boxes_patch(self, frame, bboxes, alert_type, confidence):
         """Draw bounding boxes on frame with enhanced styling"""

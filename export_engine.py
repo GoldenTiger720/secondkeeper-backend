@@ -9,6 +9,11 @@ import pycuda.autoinit
 import onnx
 from pathlib import Path
 import argparse
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class TensorRTConverter:
     def __init__(self, logger_level=trt.Logger.INFO):
@@ -70,69 +75,113 @@ class TensorRTConverter:
             print("📝 Continuing with original model...")
             return onnx_path
     def get_optimal_config(self, onnx_path, gpu_memory_gb=None):
-        """Determine optimal TensorRT configuration based on model and hardware"""
+        """Determine optimal TensorRT configuration for TensorRT 10+ based on model and hardware"""
         
-        # Get model info
-        onnx_model = onnx.load(onnx_path)
-        model_name = Path(onnx_path).stem.lower()
-        file_size_mb = os.path.getsize(onnx_path) / (1024 * 1024)
-        
-        # Get GPU info
-        device = cuda.Device(0)
-        gpu_name = device.name()
-        if isinstance(gpu_name, bytes):
-            gpu_name = gpu_name.decode()
-        total_memory = device.total_memory() / (1024**3)  # GB
-        
-        # Default optimal configuration with conservative settings for problematic models
-        config = {
-            'max_workspace_size': min(2, int(total_memory * 0.3)) * (1024**3),  # Reduced workspace
-            'fp16': True,  # Start with FP32 for stability
-            'int8': True,  # Disable INT8 initially
-            'tf32': True,  # Disable TF32 for problematic models
-            'dla_core': None,
-            'strict_types': True,  # Enable strict types for better compatibility
-            'max_batch_size': 1,
-            'optimization_level': 3,  # Reduced optimization level
-            'quantization_flags': [],
-            'calibration_dataset_size': 100,  # Reduced for faster processing
-            'enable_plugins': True,
-            'verbose': True
-        }
-        
-        # Adjust based on GPU architecture
-        compute_capability = device.compute_capability()
-        
-        # Only enable advanced features if model seems compatible
-        if 'optimized' in onnx_path or 'yolov8' not in model_name:
-            if compute_capability >= (7, 5):  # RTX 20xx series and newer
+        try:
+            # Get model info
+            onnx_model = onnx.load(onnx_path)
+            model_name = Path(onnx_path).stem.lower()
+            file_size_mb = os.path.getsize(onnx_path) / (1024 * 1024)
+            
+            # Get GPU info
+            device = cuda.Device(0)
+            gpu_name = device.name()
+            if isinstance(gpu_name, bytes):
+                gpu_name = gpu_name.decode()
+            total_memory = device.total_memory() / (1024**3)  # GB
+            compute_capability = device.compute_capability()
+            
+            # TensorRT 10+ optimized configuration
+            config = {
+                'max_workspace_size': min(4, int(total_memory * 0.5)) * (1024**3),  # Increased workspace for TRT 10+
+                'fp16': True,
+                'int8': False,  # Start with FP16, enable INT8 later if needed
+                'tf32': True,
+                'dla_core': None,
+                'strict_types': False,  # More flexible for TRT 10+
+                'max_batch_size': 1,
+                'optimization_level': 5,  # Higher optimization for TRT 10+
+                'quantization_flags': [],
+                'calibration_dataset_size': 100,
+                'enable_plugins': True,
+                'verbose': True,
+                'sparsity': False,  # TensorRT 10+ sparsity support
+                'version_compatible': True,  # Enable version compatibility
+                'exclude_lean_runtime': False,  # Include lean runtime
+                'builder_optimization_level': 5,  # New in TRT 10+
+                'profile_verbosity': 'layer_names_only',  # Detailed profiling
+                'tactic_sources': ['CUBLAS', 'CUDNN', 'EDGE_MASK_CONVOLUTIONS']  # TRT 10+ tactics
+            }
+            
+            # Adjust based on GPU architecture and TensorRT 10+ features
+            if compute_capability >= (8, 0):  # RTX 30xx/40xx series
                 config['fp16'] = True
                 config['tf32'] = True
+                config['builder_optimization_level'] = 5
+                config['enable_all_tactics'] = True
+            elif compute_capability >= (7, 5):  # RTX 20xx series
+                config['fp16'] = True
+                config['tf32'] = True
+                config['builder_optimization_level'] = 4
             elif compute_capability >= (7, 0):  # GTX 10xx series
                 config['fp16'] = True
-        
-        # Conservative settings for YOLO models with known issues
-        if 'yolo' in model_name:
-            config['optimization_level'] = 2  # Lower optimization
-            config['strict_types'] = True
-            config['max_workspace_size'] = 1 * (1024**3)  # 1GB only
-            
-            if 'v8' in model_name or 'v11' in model_name:
-                # YOLOv8/v11 often have activation fusion issues
-                config['fp16'] = False  # Start with FP32
                 config['tf32'] = False
-        
-        print(f"🎯 Conservative configuration for {gpu_name}:")
-        print(f"   Compute Capability: {compute_capability}")
-        print(f"   GPU Memory: {total_memory:.1f} GB")
-        print(f"   Workspace Size: {config['max_workspace_size'] / (1024**3):.1f} GB")
-        print(f"   FP16: {config['fp16']}")
-        print(f"   INT8: {config['int8']}")
-        print(f"   TF32: {config['tf32']}")
-        print(f"   Optimization Level: {config['optimization_level']}")
-        print(f"   Strict Types: {config['strict_types']}")
-        
-        return config
+                config['builder_optimization_level'] = 3
+            else:
+                # Older GPUs
+                config['fp16'] = False
+                config['tf32'] = False
+                config['builder_optimization_level'] = 2
+            
+            # Model-specific optimizations for TensorRT 10+
+            if 'yolo' in model_name:
+                if 'v8' in model_name or 'v11' in model_name:
+                    # YOLOv8/v11 optimizations for TRT 10+
+                    config['optimization_level'] = 5
+                    config['strict_types'] = False
+                    config['max_workspace_size'] = 2 * (1024**3)  # 2GB for complex models
+                    config['enable_all_tactics'] = True
+                elif 'v5' in model_name:
+                    # YOLOv5 optimizations
+                    config['optimization_level'] = 4
+                    config['strict_types'] = False
+            
+            # Fire/smoke model specific settings
+            if 'fire' in model_name or 'smoke' in model_name:
+                config['optimization_level'] = 5
+                config['fp16'] = True
+                config['enable_all_tactics'] = True
+                config['profile_verbosity'] = 'detailed'
+            
+            logger.info(f"🎯 TensorRT 10+ optimized configuration for {gpu_name}:")
+            logger.info(f"   Compute Capability: {compute_capability}")
+            logger.info(f"   GPU Memory: {total_memory:.1f} GB")
+            logger.info(f"   Workspace Size: {config['max_workspace_size'] / (1024**3):.1f} GB")
+            logger.info(f"   FP16: {config['fp16']}")
+            logger.info(f"   TF32: {config['tf32']}")
+            logger.info(f"   Optimization Level: {config['optimization_level']}")
+            logger.info(f"   Builder Optimization: {config['builder_optimization_level']}")
+            
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error getting optimal config: {e}")
+            # Return safe fallback config
+            return {
+                'max_workspace_size': 1 * (1024**3),
+                'fp16': True,
+                'int8': False,
+                'tf32': True,
+                'dla_core': None,
+                'strict_types': False,
+                'max_batch_size': 1,
+                'optimization_level': 3,
+                'quantization_flags': [],
+                'calibration_dataset_size': 100,
+                'enable_plugins': True,
+                'verbose': True,
+                'builder_optimization_level': 3
+            }
     
     def create_calibration_dataset(self, input_shape, dataset_size=500):
         """Create calibration dataset for INT8 quantization"""
@@ -237,174 +286,275 @@ class TensorRTConverter:
         return None
     
     def _build_engine_with_config(self, onnx_path, engine_path, config):
-        """Internal method to build engine with specific configuration"""
-        
-        # Create network
-        explicit_batch = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = self.builder.create_network(explicit_batch)
-        parser = trt.OnnxParser(network, self.logger)
-        
-        # Parse ONNX model
-        print("📖 Parsing ONNX model...")
-        with open(onnx_path, 'rb') as model:
-            if not parser.parse(model.read()):
-                print("❌ Failed to parse ONNX model")
-                for error in range(parser.num_errors):
-                    print(f"   Error {error}: {parser.get_error(error)}")
-                return None
-        
-        # Configure builder
-        builder_config = self.builder.create_builder_config()
-        
-        # Set workspace/memory limit (compatibility with different TensorRT versions)
-        if hasattr(builder_config, 'max_workspace_size'):
-            # TensorRT < 8.5
-            builder_config.max_workspace_size = config['max_workspace_size']
-        else:
-            # TensorRT >= 8.5
-            builder_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, config['max_workspace_size'])
-        
-        # Set optimization level (compatibility check)
-        if hasattr(builder_config, 'set_builder_optimization_level'):
-            builder_config.set_builder_optimization_level(config['optimization_level'])
-        elif hasattr(builder_config, 'builder_optimization_level'):
-            builder_config.builder_optimization_level = config['optimization_level']
-        
-        # Enable strict types for better compatibility
-        if config.get('strict_types', False):
-            if hasattr(trt.BuilderFlag, 'STRICT_TYPES'):
-                builder_config.set_flag(trt.BuilderFlag.STRICT_TYPES)
-        
-        # Enable precision modes with compatibility checks
-        if config['fp16']:
-            print("⚡ Enabling FP16 precision")
-            if hasattr(trt.BuilderFlag, 'FP16'):
-                builder_config.set_flag(trt.BuilderFlag.FP16)
-            else:
-                builder_config.flags |= 1 << int(trt.BuilderFlag.FP16)
-        
-        if config['tf32']:
-            print("⚡ Enabling TF32 precision")
-            if hasattr(trt.BuilderFlag, 'TF32'):
-                builder_config.set_flag(trt.BuilderFlag.TF32)
-        
-        # Skip INT8 for now due to calibration complexity
-        # Will add back after basic conversion works
-        
-        # Configure DLA if available (compatibility check)
-        if config['dla_core'] is not None:
-            print(f"🔧 Enabling DLA core {config['dla_core']}")
-            if hasattr(builder_config, 'default_device_type'):
-                builder_config.default_device_type = trt.DeviceType.DLA
-                builder_config.DLA_core = config['dla_core']
-            else:
-                print("⚠️  DLA not supported in this TensorRT version")
-        
-        # Set dynamic shapes if needed
-        input_tensor = network.get_input(0)
-        if input_tensor.shape[0] == -1:  # Dynamic batch size
-            profile = self.builder.create_optimization_profile()
-            input_shape = input_tensor.shape
-            
-            # Set dynamic batch size range
-            min_shape = [1] + list(input_shape[1:])
-            opt_shape = [config['max_batch_size']] + list(input_shape[1:])
-            max_shape = [config['max_batch_size'] * 2] + list(input_shape[1:])
-            
-            profile.set_shape(input_tensor.name, min_shape, opt_shape, max_shape)
-            builder_config.add_optimization_profile(profile)
-            print(f"📏 Dynamic shapes - Min: {min_shape}, Opt: {opt_shape}, Max: {max_shape}")
-        
-        # Build engine with compatibility handling
-        print("🔨 Building TensorRT engine (this may take several minutes)...")
-        start_time = time.time()
+        """Build TensorRT engine with TensorRT 10+ optimized configuration"""
         
         try:
-            # Try newer API first
-            if hasattr(self.builder, 'build_serialized_network'):
+            # Create network with explicit batch
+            network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+            network = self.builder.create_network(network_flags)
+            parser = trt.OnnxParser(network, self.logger)
+            
+            # Parse ONNX model
+            logger.info("📖 Parsing ONNX model...")
+            with open(onnx_path, 'rb') as model:
+                if not parser.parse(model.read()):
+                    logger.error("❌ Failed to parse ONNX model")
+                    for error in range(parser.num_errors):
+                        logger.error(f"   Error {error}: {parser.get_error(error)}")
+                    return None
+            
+            # Create builder configuration
+            builder_config = self.builder.create_builder_config()
+            
+            # TensorRT 10+ memory pool configuration
+            try:
+                # Use new memory pool API (TensorRT 8.5+)
+                builder_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, config['max_workspace_size'])
+                logger.info(f"💾 Workspace memory: {config['max_workspace_size'] / (1024**3):.1f} GB")
+            except AttributeError:
+                # Fallback to old API
+                builder_config.max_workspace_size = config['max_workspace_size']
+                logger.warning("⚠️  Using legacy workspace API")
+            
+            # TensorRT 10+ builder optimization level
+            try:
+                builder_config.set_builder_optimization_level(config.get('builder_optimization_level', 5))
+                logger.info(f"🚀 Builder optimization level: {config.get('builder_optimization_level', 5)}")
+            except AttributeError:
+                logger.warning("⚠️  Builder optimization level not supported")
+            
+            # Configure precision modes
+            if config.get('fp16', True):
+                builder_config.set_flag(trt.BuilderFlag.FP16)
+                logger.info("⚡ FP16 precision enabled")
+            
+            if config.get('tf32', True):
+                builder_config.set_flag(trt.BuilderFlag.TF32)
+                logger.info("⚡ TF32 precision enabled")
+            
+            # TensorRT 10+ strict types configuration
+            if not config.get('strict_types', False):
+                if hasattr(trt.BuilderFlag, 'STRICT_TYPES'):
+                    # Allow more flexible type conversions in TRT 10+
+                    pass  # Don't set strict types flag
+                    logger.info("🔧 Flexible type handling enabled")
+            
+            # TensorRT 10+ version compatibility
+            if config.get('version_compatible', True):
+                try:
+                    builder_config.set_flag(trt.BuilderFlag.VERSION_COMPATIBLE)
+                    logger.info("🔄 Version compatibility enabled")
+                except AttributeError:
+                    pass
+            
+            # TensorRT 10+ profiling verbosity
+            try:
+                if config.get('profile_verbosity') == 'detailed':
+                    builder_config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
+                elif config.get('profile_verbosity') == 'layer_names_only':
+                    builder_config.profiling_verbosity = trt.ProfilingVerbosity.LAYER_NAMES_ONLY
+                else:
+                    builder_config.profiling_verbosity = trt.ProfilingVerbosity.NONE
+            except AttributeError:
+                pass
+            
+            # TensorRT 10+ tactic sources
+            try:
+                if config.get('enable_all_tactics', False):
+                    builder_config.set_tactic_sources(1 << int(trt.TacticSource.CUBLAS) |
+                                                    1 << int(trt.TacticSource.CUDNN) |
+                                                    1 << int(trt.TacticSource.CUBLAS_LT))
+                    logger.info("🎯 All tactic sources enabled")
+            except AttributeError:
+                pass
+            
+            # Dynamic shapes configuration
+            input_tensor = network.get_input(0)
+            if input_tensor.shape[0] == -1:  # Dynamic batch size
+                profile = self.builder.create_optimization_profile()
+                input_shape = input_tensor.shape
+                
+                # Set dynamic batch size range
+                min_shape = [1] + list(input_shape[1:])
+                opt_shape = [config['max_batch_size']] + list(input_shape[1:])
+                max_shape = [config['max_batch_size'] * 2] + list(input_shape[1:])
+                
+                profile.set_shape(input_tensor.name, min_shape, opt_shape, max_shape)
+                builder_config.add_optimization_profile(profile)
+                logger.info(f"📏 Dynamic shapes - Min: {min_shape}, Opt: {opt_shape}, Max: {max_shape}")
+            
+            # Build engine
+            logger.info("🔨 Building TensorRT engine (this may take several minutes)...")
+            start_time = time.time()
+            
+            # Use TensorRT 10+ build API
+            try:
+                # Try the newest API first
                 serialized_engine = self.builder.build_serialized_network(network, builder_config)
                 if serialized_engine is None:
-                    print("❌ Failed to build TensorRT engine")
+                    logger.error("❌ Failed to build TensorRT engine")
                     return None
                 engine_data = serialized_engine
-            else:
-                # Fallback to older API
-                engine = self.builder.build_engine(network, builder_config)
-                if engine is None:
-                    print("❌ Failed to build TensorRT engine")
+            except Exception as e:
+                logger.error(f"❌ Engine build failed: {e}")
+                # Try fallback to older API if available
+                try:
+                    engine = self.builder.build_engine(network, builder_config)
+                    if engine is None:
+                        logger.error("❌ Failed to build TensorRT engine with fallback API")
+                        return None
+                    engine_data = engine.serialize()
+                    logger.warning("⚠️  Used fallback build API")
+                except Exception as fallback_e:
+                    logger.error(f"❌ Fallback build also failed: {fallback_e}")
                     return None
-                engine_data = engine.serialize()
-        
+            
+            build_time = time.time() - start_time
+            logger.info(f"✅ Engine built successfully in {build_time:.1f} seconds")
+            
+            # Save engine
+            logger.info(f"💾 Saving engine to {engine_path}")
+            os.makedirs(os.path.dirname(engine_path), exist_ok=True)
+            with open(engine_path, 'wb') as f:
+                f.write(engine_data)
+            
+            # Save configuration
+            config_path = engine_path.replace('.engine', '_config.json')
+            # Make config JSON serializable
+            json_config = {}
+            for key, value in config.items():
+                if isinstance(value, (int, float, str, bool, list)) or value is None:
+                    json_config[key] = value
+                else:
+                    json_config[key] = str(value)
+            
+            with open(config_path, 'w') as f:
+                json.dump(json_config, f, indent=2)
+            
+            # Report results
+            engine_size_mb = os.path.getsize(engine_path) / (1024 * 1024)
+            logger.info(f"📊 Engine size: {engine_size_mb:.1f} MB")
+            logger.info(f"📁 Config saved: {config_path}")
+            
+            return engine_path
+            
         except Exception as e:
-            print(f"❌ Engine build failed: {e}")
+            logger.error(f"❌ Engine build failed with error: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
-        
-        build_time = time.time() - start_time
-        print(f"✅ Engine built successfully in {build_time:.1f} seconds")
-        
-        # Serialize and save engine
-        print(f"💾 Saving engine to {engine_path}")
-        with open(engine_path, 'wb') as f:
-            f.write(engine_data)
-        
-        # Save configuration info
-        config_path = engine_path.replace('.engine', '_config.json')
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        
-        engine_size_mb = os.path.getsize(engine_path) / (1024 * 1024)
-        print(f"📊 Engine size: {engine_size_mb:.1f} MB")
-        
-        return engine_path
     
     def benchmark_engine(self, engine_path, num_iterations=100):
-        """Benchmark the TensorRT engine performance"""
-        print(f"🏃 Benchmarking engine: {engine_path}")
+        """Benchmark TensorRT engine performance with TensorRT 10+ compatibility"""
+        logger.info(f"🏃 Benchmarking engine: {engine_path}")
         
-        # Load engine
-        with open(engine_path, 'rb') as f:
-            engine_data = f.read()
-        
-        runtime = trt.Runtime(self.logger)
-        engine = runtime.deserialize_cuda_engine(engine_data)
-        context = engine.create_execution_context()
-        
-        # Get input/output info
-        input_shape = engine.get_binding_shape(0)
-        output_shape = engine.get_binding_shape(1)
-        
-        # Allocate memory
-        input_size = trt.volume(input_shape) * engine.max_batch_size
-        output_size = trt.volume(output_shape) * engine.max_batch_size
-        
-        h_input = cuda.pagelocked_empty(input_size, dtype=np.float32)
-        h_output = cuda.pagelocked_empty(output_size, dtype=np.float32)
-        d_input = cuda.mem_alloc(h_input.nbytes)
-        d_output = cuda.mem_alloc(h_output.nbytes)
-        
-        # Benchmark
-        cuda.memcpy_htod(d_input, h_input)
-        
-        # Warmup
-        for _ in range(10):
-            context.execute_v2(bindings=[int(d_input), int(d_output)])
-        
-        # Actual benchmark
-        start_time = time.time()
-        for _ in range(num_iterations):
-            context.execute_v2(bindings=[int(d_input), int(d_output)])
-        
-        cuda.Context.synchronize()
-        end_time = time.time()
-        
-        avg_time = (end_time - start_time) / num_iterations * 1000  # ms
-        fps = 1000 / avg_time
-        
-        print(f"📈 Benchmark Results ({num_iterations} iterations):")
-        print(f"   Average inference time: {avg_time:.2f} ms")
-        print(f"   Throughput: {fps:.1f} FPS")
-        
-        return avg_time, fps
+        try:
+            # Load engine
+            with open(engine_path, 'rb') as f:
+                engine_data = f.read()
+            
+            runtime = trt.Runtime(self.logger)
+            engine = runtime.deserialize_cuda_engine(engine_data)
+            context = engine.create_execution_context()
+            
+            # TensorRT 10+ API compatibility for getting tensor info
+            try:
+                # Try new API first (TensorRT 10+)
+                input_names = []
+                output_names = []
+                
+                for i in range(engine.num_io_tensors):
+                    name = engine.get_tensor_name(i)
+                    if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                        input_names.append(name)
+                    else:
+                        output_names.append(name)
+                
+                input_shape = engine.get_tensor_shape(input_names[0])
+                output_shape = engine.get_tensor_shape(output_names[0])
+                
+                logger.info(f"📏 Input shape: {input_shape}")
+                logger.info(f"📏 Output shape: {output_shape}")
+                
+            except AttributeError:
+                # Fallback to old API
+                logger.warning("⚠️  Using legacy tensor info API")
+                input_shape = engine.get_binding_shape(0)
+                output_shape = engine.get_binding_shape(1)
+                input_names = [engine.get_binding_name(0)]
+                output_names = [engine.get_binding_name(1)]
+            
+            # Calculate tensor sizes
+            input_size = np.prod(input_shape)
+            output_size = np.prod(output_shape)
+            
+            # Allocate memory
+            h_input = cuda.pagelocked_empty(input_size, dtype=np.float32)
+            h_output = cuda.pagelocked_empty(output_size, dtype=np.float32)
+            d_input = cuda.mem_alloc(h_input.nbytes)
+            d_output = cuda.mem_alloc(h_output.nbytes)
+            
+            # Initialize input with random data
+            h_input[:] = np.random.randn(*h_input.shape).astype(np.float32)
+            cuda.memcpy_htod(d_input, h_input)
+            
+            # Set tensor addresses for TensorRT 10+
+            try:
+                # Use new API
+                context.set_tensor_address(input_names[0], int(d_input))
+                context.set_tensor_address(output_names[0], int(d_output))
+                use_new_api = True
+            except AttributeError:
+                # Use old binding API
+                use_new_api = False
+                bindings = [int(d_input), int(d_output)]
+            
+            # Warmup runs
+            logger.info(f"🔥 Warming up with 10 iterations...")
+            for _ in range(10):
+                if use_new_api:
+                    context.execute_async_v3(cuda.Stream().handle)
+                else:
+                    context.execute_v2(bindings=bindings)
+            
+            cuda.Context.synchronize()
+            
+            # Actual benchmark
+            logger.info(f"⏱️  Running benchmark with {num_iterations} iterations...")
+            start_time = time.time()
+            
+            for _ in range(num_iterations):
+                if use_new_api:
+                    context.execute_async_v3(cuda.Stream().handle)
+                else:
+                    context.execute_v2(bindings=bindings)
+            
+            cuda.Context.synchronize()
+            end_time = time.time()
+            
+            # Calculate metrics
+            total_time = end_time - start_time
+            avg_time = total_time / num_iterations * 1000  # ms
+            fps = 1000 / avg_time
+            
+            logger.info(f"📈 Benchmark Results ({num_iterations} iterations):")
+            logger.info(f"   Total time: {total_time:.3f} seconds")
+            logger.info(f"   Average inference time: {avg_time:.2f} ms")
+            logger.info(f"   Throughput: {fps:.1f} FPS")
+            logger.info(f"   Memory usage: Input={h_input.nbytes/1024/1024:.1f}MB, Output={h_output.nbytes/1024/1024:.1f}MB")
+            
+            # Cleanup
+            del h_input, h_output
+            d_input.free()
+            d_output.free()
+            
+            return avg_time, fps
+            
+        except Exception as e:
+            logger.error(f"❌ Benchmark failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return None, None
 
 def find_onnx_models(models_dir="models"):
     """Find all ONNX models in the specified directory"""
@@ -454,70 +604,134 @@ def convert_all_models(models_dir="models", output_dir=None):
     print(f"\n✅ Successfully converted {successful}/{len(onnx_models)} models")
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert ONNX models to TensorRT engines')
+    parser = argparse.ArgumentParser(description='Convert ONNX models to TensorRT engines with TensorRT 10+ optimization')
     parser.add_argument('--models-dir', type=str, default='models', 
                        help='Directory containing ONNX models')
     parser.add_argument('--output-dir', type=str, help='Output directory for engines')
     parser.add_argument('--model', type=str, help='Convert specific model')
     parser.add_argument('--fp16', action='store_true', help='Force enable FP16')
     parser.add_argument('--int8', action='store_true', help='Force enable INT8')
+    parser.add_argument('--tf32', action='store_true', default=True, help='Enable TF32 (default: True)')
     parser.add_argument('--batch-size', type=int, default=1, help='Max batch size')
     parser.add_argument('--workspace', type=int, default=4, help='Workspace size in GB')
+    parser.add_argument('--optimization-level', type=int, default=5, help='Builder optimization level (0-5)')
+    parser.add_argument('--strict-types', action='store_true', help='Enable strict type constraints')
+    parser.add_argument('--version-compatible', action='store_true', default=False, help='Enable version compatibility')
+    parser.add_argument('--no-version-compatible', action='store_true', help='Disable version compatibility')
+    parser.add_argument('--profile-verbosity', choices=['none', 'layer_names_only', 'detailed'], 
+                       default='layer_names_only', help='Profiling verbosity level')
+    parser.add_argument('--enable-all-tactics', action='store_true', help='Enable all tactic sources')
     parser.add_argument('--benchmark', action='store_true', help='Benchmark converted engines')
+    parser.add_argument('--benchmark-iterations', type=int, default=100, help='Number of benchmark iterations')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     
     args = parser.parse_args()
+    
+    # Setup logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Display TensorRT version and system info
+    try:
+        logger.info(f"🔧 TensorRT version: {trt.__version__}")
+        device = cuda.Device(0)
+        gpu_name = device.name()
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode()
+        compute_cap = device.compute_capability()
+        total_memory = device.total_memory() / (1024**3)
+        logger.info(f"🎮 GPU: {gpu_name}")
+        logger.info(f"📊 Compute Capability: {compute_cap}")
+        logger.info(f"💾 GPU Memory: {total_memory:.1f} GB")
+    except Exception as e:
+        logger.error(f"❌ TensorRT/CUDA not properly installed: {e}")
+        logger.error("💡 Please install: pip install tensorrt pycuda")
+        return
     
     # Check CUDA availability
     try:
         device_count = cuda.Device.count()
         if device_count == 0:
-            print("❌ No CUDA devices found!")
+            logger.error("❌ No CUDA devices found!")
             return
-        print(f"🔧 Found {device_count} CUDA device(s)")
+        logger.info(f"🔧 Found {device_count} CUDA device(s)")
     except Exception as e:
-        print(f"❌ CUDA initialization failed: {e}")
+        logger.error(f"❌ CUDA initialization failed: {e}")
         return
     
     if args.model:
         # Convert specific model
         try:
+            logger.info(f"🚀 Converting specific model: {args.model}")
             converter = TensorRTConverter()
-            config_override = {}
+            
+            # Build configuration override
+            config_override = {
+                'builder_optimization_level': args.optimization_level,
+                'strict_types': args.strict_types,
+                'version_compatible': args.version_compatible,
+                'profile_verbosity': args.profile_verbosity,
+                'enable_all_tactics': args.enable_all_tactics,
+            }
             
             if args.fp16:
                 config_override['fp16'] = True
+                logger.info("⚡ FP16 forced enabled")
             if args.int8:
                 config_override['int8'] = True
+                logger.info("⚡ INT8 forced enabled")
+            if not args.tf32:
+                config_override['tf32'] = False
+                logger.info("⚠️  TF32 disabled")
             if args.batch_size != 1:
                 config_override['max_batch_size'] = args.batch_size
+                logger.info(f"📦 Max batch size: {args.batch_size}")
             if args.workspace != 4:
                 config_override['max_workspace_size'] = args.workspace * (1024**3)
+                logger.info(f"💾 Workspace size: {args.workspace} GB")
+            if args.no_version_compatible:
+                config_override['version_compatible'] = False
+                logger.info("🚫 Version compatibility disabled")
             
+            # Find model path
             model_path = os.path.join(args.models_dir, args.model)
             if not os.path.exists(model_path):
                 model_path = args.model  # Try as absolute path
                 if not os.path.exists(model_path):
-                    print(f"❌ Model not found: {args.model}")
+                    logger.error(f"❌ Model not found: {args.model}")
                     return
             
+            logger.info(f"📁 Model path: {model_path}")
+            
+            # Convert model
             engine_path = converter.build_engine(model_path, config_override=config_override)
             
-            if engine_path and args.benchmark:
-                converter.benchmark_engine(engine_path)
+            if engine_path:
+                logger.info(f"✅ Conversion successful: {engine_path}")
+                
+                # Benchmark if requested
+                if args.benchmark:
+                    logger.info("🏃 Starting benchmark...")
+                    avg_time, fps = converter.benchmark_engine(engine_path, args.benchmark_iterations)
+                    if avg_time is not None:
+                        logger.info(f"🎯 Final Results: {avg_time:.2f}ms avg, {fps:.1f} FPS")
+            else:
+                logger.error("❌ Conversion failed")
                 
         except Exception as e:
-            print(f"❌ Conversion failed: {e}")
+            logger.error(f"❌ Conversion failed: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     else:
         # Convert all models
         try:
+            logger.info(f"🔄 Converting all models in directory: {args.models_dir}")
             convert_all_models(args.models_dir, args.output_dir)
         except Exception as e:
-            print(f"❌ Batch conversion failed: {e}")
+            logger.error(f"❌ Batch conversion failed: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
 if __name__ == "__main__":
     # Check TensorRT installation

@@ -7,11 +7,17 @@ import numpy as np
 import cv2
 from pathlib import Path
 import argparse
+import os
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def convert_yolo_to_onnx(model_path, output_path=None, img_size=640, batch_size=1, device='cpu', 
-                        opset_version=11, simplify=True, dynamic=False):
+                        opset_version=17, simplify=True, dynamic=False, half=False):
     """
-    Convert YOLO model to ONNX format
+    Convert YOLO model to ONNX format optimized for TensorRT 10+
     
     Args:
         model_path (str): Path to YOLO model (.pt file)
@@ -19,31 +25,73 @@ def convert_yolo_to_onnx(model_path, output_path=None, img_size=640, batch_size=
         img_size (int): Input image size
         batch_size (int): Batch size for conversion
         device (str): Device to use ('cpu' or 'cuda')
-        opset_version (int): ONNX opset version
+        opset_version (int): ONNX opset version (17 recommended for TensorRT 10+)
         simplify (bool): Simplify ONNX model
         dynamic (bool): Dynamic input shapes
+        half (bool): Use FP16 precision
     """
     
+    # Validate model path
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    
     # Load YOLO model
-    print(f"Loading YOLO model from {model_path}")
-    model = YOLO(model_path)
+    logger.info(f"Loading YOLO model from {model_path}")
+    try:
+        model = YOLO(model_path)
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        raise
     
     # Set output path if not provided
     if output_path is None:
         output_path = model_path.replace('.pt', '.onnx')
     
-    # Export to ONNX
-    print(f"Converting to ONNX format...")
-    model.export(
-        format='onnx',
-        imgsz=img_size,
-        opset=opset_version,
-        dynamic=dynamic,
-        simplify=simplify
-    )
+    # Create output directory if needed
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    print(f"Model converted successfully to {output_path}")
-    return output_path
+    # Export to ONNX with TensorRT-optimized settings
+    logger.info(f"Converting to ONNX format (opset {opset_version})...")
+    try:
+        export_result = model.export(
+            format='onnx',
+            imgsz=img_size,
+            opset=opset_version,
+            dynamic=dynamic,
+            simplify=simplify,
+            half=half,
+            int8=False,  # Disable INT8 for better TensorRT compatibility
+            optimize=True,  # Enable optimization
+            workspace=4  # 4GB workspace for optimization
+        )
+        
+        # The export might return the path or the model might create it automatically
+        if isinstance(export_result, str):
+            actual_output = export_result
+        else:
+            # Ultralytics sometimes creates the file with a different name
+            base_name = os.path.splitext(model_path)[0]
+            actual_output = f"{base_name}.onnx"
+        
+        # Move to desired output path if different
+        if actual_output != output_path and os.path.exists(actual_output):
+            import shutil
+            shutil.move(actual_output, output_path)
+        
+        logger.info(f"✅ Model converted successfully to {output_path}")
+        
+        # Verify file exists and has reasonable size
+        if os.path.exists(output_path):
+            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            logger.info(f"📊 ONNX model size: {file_size_mb:.1f} MB")
+        else:
+            raise FileNotFoundError(f"Output file not created: {output_path}")
+            
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Failed to export model: {e}")
+        raise
 
 def convert_yolov5_to_onnx(model_path, output_path=None, img_size=640, batch_size=1, 
                           device='cpu', opset_version=11):
@@ -163,14 +211,24 @@ def main():
     parser.add_argument('--img-size', type=int, default=640, help='Input image size')
     parser.add_argument('--batch-size', type=int, default=1, help='Batch size')
     parser.add_argument('--device', type=str, default='cpu', help='Device (cpu/cuda)')
-    parser.add_argument('--opset', type=int, default=11, help='ONNX opset version')
+    parser.add_argument('--opset', type=int, default=17, help='ONNX opset version (17 recommended for TensorRT 10+)')
     parser.add_argument('--simplify', action='store_true', help='Simplify ONNX model')
     parser.add_argument('--dynamic', action='store_true', help='Dynamic input shapes')
+    parser.add_argument('--half', action='store_true', help='Use FP16 precision')
     parser.add_argument('--verify', action='store_true', help='Verify converted model')
     parser.add_argument('--compare', action='store_true', help='Compare PyTorch vs ONNX')
     parser.add_argument('--test-image', type=str, help='Test image path for verification')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     
     args = parser.parse_args()
+    
+    # Setup logging
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    logger.info("🚀 YOLO to ONNX Converter - TensorRT 10+ Optimized")
+    logger.info(f"📁 Input model: {args.model}")
+    logger.info(f"📊 ONNX opset version: {args.opset}")
     
     # Convert model
     onnx_path = convert_yolo_to_onnx(
@@ -181,7 +239,8 @@ def main():
         device=args.device,
         opset_version=args.opset,
         simplify=args.simplify,
-        dynamic=args.dynamic
+        dynamic=args.dynamic,
+        half=args.half
     )
     
     # Verify if requested
@@ -201,8 +260,8 @@ if __name__ == "__main__":
     
     # Advanced conversion with options
     # convert_yolo_to_onnx(
-    #     model_path='yolov8s.pt',
-    #     output_path='yolov8s_dynamic.onnx',
+    #     model_path='./models/yolo11m-pose.pt',
+    #     output_path='yolo11m-pose.onnx',
     #     img_size=640,
     #     dynamic=True,
     #     simplify=True

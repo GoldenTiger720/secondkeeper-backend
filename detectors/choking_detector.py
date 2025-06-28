@@ -1,296 +1,503 @@
 import cv2
 import numpy as np
 import math
+import logging
 from ultralytics import YOLO
 import mediapipe as mp
-import logging
-import torch
+from .base_detector import BaseDetector
 from django.conf import settings
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("security_ai")
 
 
-class ChokingDetector:
-    """
-    Choking detection class that processes frames and returns annotated frames with choking detection.
-    
-    Usage:
-        detector = ChokingDetector()
-        annotated_frame = detector.detect(frame, confidence_threshold=0.5, alert_threshold=0.7)
-    """
-    
-    def __init__(self, model_path=settings.MODEL_PATHS['choking']):
-        """
-        Initialize the choking detector.
-        
-        Args:
-            model_path (str): Path to the YOLO pose model
-        """
-        # Check GPU availability
-        self.device = self._check_gpu()
-        logger.info(f"Using device: {self.device}")
-        
-        self.model = YOLO(model_path)
-        self.model.to(self.device)
-        self.analyzer = ChokingAnalyzer()
-        
-        # Initialize MediaPipe Hands
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            min_detection_confidence=0.5
-        )
-    
-    def _check_gpu(self):
-        """Check GPU availability and return appropriate device."""
-        if torch.cuda.is_available():
-            device_count = torch.cuda.device_count()
-            logger.info(f"CUDA is available with {device_count} GPU(s)")
-            return 'cuda'
-        else:
-            logger.info("CUDA is not available, using CPU")
-            return 'cpu'
-    
-    def detect(self, frame, confidence_threshold=0.5, alert_threshold=0.7):
-        """
-        Process a frame and return annotated frame with choking detection.
-        
-        Args:
-            frame (numpy.ndarray): Input frame (BGR format)
-            confidence_threshold (float): Confidence threshold for pose detection (0.1-1.0)
-            alert_threshold (float): Alert threshold for choking detection (0.1-1.0)
-        
-        Returns:
-            tuple: (annotated_frame, choking_probability)
-                - annotated_frame (numpy.ndarray): Annotated frame with detection results
-                - choking_probability (float): Probability of choking (0.0-1.0)
-        """
-        try:
-            # Run YOLO pose detection
-            results = self.model(frame, conf=confidence_threshold, verbose=False)
-            annotated_frame = frame.copy()
-            
-            choking_detected = False
-            max_probability = 0.0
-            
-            for result in results:
-                if result.keypoints is not None and result.keypoints.xy is not None and result.keypoints.conf is not None:
-                    # Handle device-specific tensor operations
-                    if self.device == 'cuda':
-                        keypoints = result.keypoints.xy.cpu().numpy()
-                        confidences = result.keypoints.conf.cpu().numpy()
-                    else:
-                        keypoints = result.keypoints.xy.numpy()
-                        confidences = result.keypoints.conf.numpy()
-                    
-                    for kpts, confs in zip(keypoints, confidences):
-                        # Detect finger tips using MediaPipe
-                        finger_tips = self._detect_fingers(frame, kpts, confs)
-                        
-                        # Analyze choking features
-                        features = self.analyzer.analyze(
-                            kpts, confs, frame.shape[:2], finger_tips=finger_tips
-                        )
-                        
-                        max_probability = max(max_probability, features['choking_probability'])
-                        
-                        # Draw annotations on frame
-                        annotated_frame = self._draw_annotations(
-                            annotated_frame, kpts, confs, features, confidence_threshold
-                        )
-                        
-                        # Check if choking is detected based on the specific condition
-                        if features['choking_state'] == "CHOKING":
-                            choking_detected = True
-            
-            return annotated_frame, max_probability
-            
-        except Exception as e:
-            logger.error(f"Error in choking detection: {e}")
-            return frame, 0.0
-    
-    def _detect_fingers(self, frame, keypoints, confidences):
-        """Detect fingers using MediaPipe Hands, returns list of finger tip positions."""
-        finger_tips = []
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(image_rgb)
-        
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Finger tip landmark indices: Thumb_tip, Index_tip, Middle_tip, Ring_tip, Pinky_tip
-                for idx in [4, 8, 12, 16, 20]:
-                    lm = hand_landmarks.landmark[idx]
-                    h, w, _ = frame.shape
-                    x, y = int(lm.x * w), int(lm.y * h)
-                    finger_tips.append((x, y))
-        
-        return finger_tips
-    
-    def _draw_annotations(self, frame, keypoints, confidences, features, confidence_threshold):
-        """Draw annotations on the frame."""
-        # Draw keypoints
-        for i, (x, y) in enumerate(keypoints):
-            if confidences[i] > confidence_threshold:
-                cv2.circle(frame, (int(x), int(y)), 5, (0, 255, 0), -1)
-        
-        # Draw neck center
-        neck_center, neck_detected = self.analyzer.calculate_neck_center(keypoints, confidences)
-        if neck_detected:
-            cv2.circle(frame, (int(neck_center[0]), int(neck_center[1])), 8, (255, 0, 255), -1)
-        
-        # Draw wrist-to-neck lines
-        if features['left_wrist_at_neck'] and neck_detected:
-            lw = keypoints[self.analyzer.KEYPOINTS['left_wrist']]
-            cv2.line(frame, (int(lw[0]), int(lw[1])), 
-                    (int(neck_center[0]), int(neck_center[1])), (0, 0, 255), 2)
-        
-        if features['right_wrist_at_neck'] and neck_detected:
-            rw = keypoints[self.analyzer.KEYPOINTS['right_wrist']]
-            cv2.line(frame, (int(rw[0]), int(rw[1])), 
-                    (int(neck_center[0]), int(neck_center[1])), (0, 0, 255), 2)
-        
-        # Draw eyes closed indicator
-        if features['eyes_closed']:
-            for eye in ['left_eye', 'right_eye']:
-                idx = self.analyzer.KEYPOINTS[eye]
-                if confidences[idx] > confidence_threshold:
-                    x, y = int(keypoints[idx][0]), int(keypoints[idx][1])
-                    cv2.line(frame, (x-8, y-8), (x+8, y+8), (0, 100, 255), 3)
-                    cv2.line(frame, (x-8, y+8), (x+8, y-8), (0, 100, 255), 3)
-        
-        # Draw finger tips
-        finger_tips = self._detect_fingers(frame, keypoints, confidences)
-        for x, y in finger_tips:
-            cv2.circle(frame, (x, y), 5, (255, 255, 0), -1)
-        
-        # Draw status text
-        color = (0, 0, 255) if features['choking_probability'] > 0.7 else (0, 255, 0)
-        cv2.putText(frame, features['choking_state'], (10, 40), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
-        # Draw probability
-        cv2.putText(frame, f"Probability: {features['choking_probability']:.2f}", 
-                   (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        
-        return frame
-
-
-class ChokingAnalyzer:
+class ChokingDetector(BaseDetector):
     """Analyzes choking signs based on pose keypoints and features"""
 
     def __init__(self):
-        self.KEYPOINTS = {
-            'nose': 0, 'left_eye': 1, 'right_eye': 2, 'left_ear': 3, 'right_ear': 4,
-            'left_shoulder': 5, 'right_shoulder': 6, 'left_elbow': 7, 'right_elbow': 8,
-            'left_wrist': 9, 'right_wrist': 10, 'left_hip': 11, 'right_hip': 12,
-            'left_knee': 13, 'right_knee': 14, 'left_ankle': 15, 'right_ankle': 16
-        }
-        self.WRIST_NECK_THRESHOLD = 0.12
-        self.CONFIDENCE_THRESHOLD = 0.3
-        self.eye_closed_threshold = 15  # pixels
-
-    def calculate_neck_center(self, keypoints, confidences):
-        """Calculate the center point of the neck based on shoulder keypoints."""
-        left_shoulder = keypoints[self.KEYPOINTS['left_shoulder']]
-        right_shoulder = keypoints[self.KEYPOINTS['right_shoulder']]
-        left_shoulder_conf = confidences[self.KEYPOINTS['left_shoulder']]
-        right_shoulder_conf = confidences[self.KEYPOINTS['right_shoulder']]
+        super().__init__()
+        self.WRIST_NECK_THRESHOLD = 0.1
+        self.ELBOW_NECK_THRESHOLD = 0.12
+        self.WRIST_DISTANCE_THRESHOLD = 0.03  # Maximum distance between wrists when choking
+        self.HAND_SYMMETRY_THRESHOLD = 0.05  # Threshold for hand symmetry detection
+        self.ARM_NECK_COSINE_THRESHOLD = 0.8  # Cosine similarity threshold for arm direction
+        self.SIDE_POSE_THRESHOLD = 0.15  # Threshold for detecting side pose
+        model_path = settings.MODEL_PATHS['pose_model']
+        self.model = YOLO(model_path)
         
-        if left_shoulder_conf > self.CONFIDENCE_THRESHOLD and right_shoulder_conf > self.CONFIDENCE_THRESHOLD:
-            neck_x = (left_shoulder[0] + right_shoulder[0]) / 2
-            neck_y = (left_shoulder[1] + right_shoulder[1]) / 2 + 10  # offset down
-            return np.array([neck_x, neck_y]), True
-        return None, False
+        # Initialize MediaPipe for enhanced detection
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            enable_segmentation=False,
+            min_detection_confidence=0.5
+        )
+        
 
     def calculate_wrist_to_neck_distance(self, wrist_point, neck_center, image_shape):
-        """Calculate normalized distance between wrist and neck."""
+        """Calculate normalized distance between wrist and neck"""
         if neck_center is None:
             return float('inf')
         distance = np.linalg.norm(np.array(wrist_point) - np.array(neck_center))
         image_diagonal = math.sqrt(image_shape[0] ** 2 + image_shape[1] ** 2)
         return distance / image_diagonal
 
-    def detect_eye_closed(self, keypoints, confidences):
-        """Detect if eyes are closed based on eye-ear distance."""
-        left_eye = keypoints[self.KEYPOINTS['left_eye']]
-        right_eye = keypoints[self.KEYPOINTS['right_eye']]
-        left_ear = keypoints[self.KEYPOINTS['left_ear']]
-        right_ear = keypoints[self.KEYPOINTS['right_ear']]
-        
-        left_eye_conf = confidences[self.KEYPOINTS['left_eye']]
-        right_eye_conf = confidences[self.KEYPOINTS['right_eye']]
-        left_ear_conf = confidences[self.KEYPOINTS['left_ear']]
-        right_ear_conf = confidences[self.KEYPOINTS['right_ear']]
-        
-        if (left_eye_conf > self.CONFIDENCE_THRESHOLD and right_eye_conf > self.CONFIDENCE_THRESHOLD and
-            left_ear_conf > self.CONFIDENCE_THRESHOLD and right_ear_conf > self.CONFIDENCE_THRESHOLD):
-            left_eye_ear_dist = np.linalg.norm(np.array(left_eye) - np.array(left_ear))
-            right_eye_ear_dist = np.linalg.norm(np.array(right_eye) - np.array(right_ear))
-            
-            if left_eye_ear_dist < self.eye_closed_threshold or right_eye_ear_dist < self.eye_closed_threshold:
-                return True
-        return False
+    def calculate_wrist_distance(self, left_wrist, right_wrist, image_shape):
+        """Calculate normalized distance between both wrists"""
+        distance = np.linalg.norm(np.array(left_wrist) - np.array(right_wrist))
+        image_diagonal = math.sqrt(image_shape[0] ** 2 + image_shape[1] ** 2)
+        return distance / image_diagonal
 
-    def analyze(self, keypoints, confidences, image_shape, finger_tips=None):
-        """
-        Analyze keypoints and finger tips to determine choking features.
+    def check_hand_symmetry(self, left_wrist, right_wrist, neck_center, image_shape):
+        """Check if both hands are positioned symmetrically around the neck"""
+        if neck_center is None:
+            return False
         
-        Returns:
-            dict: Features dictionary with choking analysis results
-        """
+        # Calculate distances from each wrist to neck
+        left_to_neck = np.linalg.norm(np.array(left_wrist) - np.array(neck_center))
+        right_to_neck = np.linalg.norm(np.array(right_wrist) - np.array(neck_center))
+        
+        # Calculate difference in distances (normalized)
+        image_diagonal = math.sqrt(image_shape[0] ** 2 + image_shape[1] ** 2)
+        distance_diff = abs(left_to_neck - right_to_neck) / image_diagonal
+        
+        # Check if the difference is within symmetry threshold
+        return distance_diff < self.HAND_SYMMETRY_THRESHOLD
+
+    def detect_side_pose(self, keypoints, confidences):
+        """Detect if the person is in side pose based on shoulder positions"""
+        left_shoulder = keypoints[self.KEYPOINTS['left_shoulder']]
+        right_shoulder = keypoints[self.KEYPOINTS['right_shoulder']]
+        left_shoulder_conf = confidences[self.KEYPOINTS['left_shoulder']]
+        right_shoulder_conf = confidences[self.KEYPOINTS['right_shoulder']]
+        
+        if (left_shoulder_conf < self.CONFIDENCE_THRESHOLD or 
+            right_shoulder_conf < self.CONFIDENCE_THRESHOLD):
+            return False
+            
+        # Calculate horizontal distance between shoulders
+        shoulder_distance = abs(left_shoulder[0] - right_shoulder[0])
+        image_width = max(left_shoulder[0], right_shoulder[0]) * 2  # Estimate image width
+        normalized_distance = shoulder_distance / image_width if image_width > 0 else 0
+        
+        # If shoulders are too close horizontally, it's likely a side pose
+        return normalized_distance < self.SIDE_POSE_THRESHOLD
+
+    def calculate_cosine_similarity(self, vec1, vec2):
+        """Calculate cosine similarity between two vectors"""
+        try:
+            dot_product = np.dot(vec1, vec2)
+            norm1 = np.linalg.norm(vec1)
+            norm2 = np.linalg.norm(vec2)
+            
+            if norm1 == 0 or norm2 == 0:
+                return 0
+                
+            return dot_product / (norm1 * norm2)
+        except Exception:
+            return 0
+
+    def check_arm_direction_to_neck(self, wrist, elbow, neck, confidences, side):
+        """Check if arm is directed towards neck using cosine similarity"""
+        wrist_conf = confidences[self.KEYPOINTS[f'{side}_wrist']]
+        elbow_conf = confidences[self.KEYPOINTS[f'{side}_elbow']]
+        
+        if (wrist_conf < self.CONFIDENCE_THRESHOLD or 
+            elbow_conf < self.CONFIDENCE_THRESHOLD or 
+            neck is None):
+            return False, 0
+            
+        # Calculate arm direction vector (wrist - elbow)
+        arm_vector = np.array(wrist) - np.array(elbow)
+        
+        # Calculate neck direction vector (neck - elbow)
+        neck_vector = np.array(neck) - np.array(elbow)
+        
+        # Calculate cosine similarity
+        cosine_sim = self.calculate_cosine_similarity(arm_vector, neck_vector)
+        
+        # Check if arm is pointing towards neck
+        is_directed = cosine_sim >= self.ARM_NECK_COSINE_THRESHOLD
+        
+        return is_directed, cosine_sim
+
+    def check_wrist_elbow_near_neck(self, keypoints, confidences, neck_center, image_shape):
+        """Check if wrist or elbow keypoints are near neck area"""
+        if neck_center is None:
+            return {'left': False, 'right': False, 'any_near': False}
+            
+        results = {'left': False, 'right': False, 'any_near': False}
+        
+        for side in ['left', 'right']:
+            wrist = keypoints[self.KEYPOINTS[f'{side}_wrist']]
+            elbow = keypoints[self.KEYPOINTS[f'{side}_elbow']]
+            wrist_conf = confidences[self.KEYPOINTS[f'{side}_wrist']]
+            elbow_conf = confidences[self.KEYPOINTS[f'{side}_elbow']]
+            
+            # Check wrist proximity to neck
+            if wrist_conf > self.CONFIDENCE_THRESHOLD:
+                wrist_dist = self.calculate_wrist_to_neck_distance(wrist, neck_center, image_shape)
+                if wrist_dist < self.WRIST_NECK_THRESHOLD:
+                    results[side] = True
+                    results['any_near'] = True
+            
+            # Check elbow proximity to neck
+            if elbow_conf > self.CONFIDENCE_THRESHOLD:
+                elbow_dist = self.calculate_wrist_to_neck_distance(elbow, neck_center, image_shape)
+                if elbow_dist < self.ELBOW_NECK_THRESHOLD:
+                    results[side] = True
+                    results['any_near'] = True
+                    
+        return results
+
+    def check_both_hands_at_neck(self, left_wrist, right_wrist, neck_center, image_shape):
+        """Check if both hands are positioned close to the neck area"""
+        if neck_center is None:
+            return False
+        
+        left_dist = self.calculate_wrist_to_neck_distance(left_wrist, neck_center, image_shape)
+        right_dist = self.calculate_wrist_to_neck_distance(right_wrist, neck_center, image_shape)
+        diff = abs(left_dist - right_dist)
+        
+        # Both wrists should be close to neck
+        return (left_dist < self.WRIST_NECK_THRESHOLD and 
+                right_dist < self.WRIST_NECK_THRESHOLD )
+    
+    def safe_tensor_to_numpy(self, tensor_data):
+        """Safely convert tensor data to numpy arrays"""
+        try:
+            if isinstance(tensor_data, np.ndarray):
+                return tensor_data
+            if hasattr(tensor_data, 'cpu'):
+                return tensor_data.cpu().numpy()
+            if hasattr(tensor_data, 'numpy'):
+                return tensor_data.numpy()
+            return np.array(tensor_data)
+        except Exception as e:
+            logger.error(f"Error converting tensor to numpy: {e}")
+            return np.array([])
+    
+    def detect_violence_like_motion(self, keypoints, confidences):
+        """Detect violence-like motions to differentiate from choking"""
+        try:
+            # Check for punching-like motions (extended arms away from body)
+            left_shoulder = keypoints[self.KEYPOINTS['left_shoulder']]
+            right_shoulder = keypoints[self.KEYPOINTS['right_shoulder']]
+            left_wrist = keypoints[self.KEYPOINTS['left_wrist']]
+            right_wrist = keypoints[self.KEYPOINTS['right_wrist']]
+            left_elbow = keypoints[self.KEYPOINTS['left_elbow']]
+            right_elbow = keypoints[self.KEYPOINTS['right_elbow']]
+            
+            left_shoulder_conf = confidences[self.KEYPOINTS['left_shoulder']]
+            right_shoulder_conf = confidences[self.KEYPOINTS['right_shoulder']]
+            left_wrist_conf = confidences[self.KEYPOINTS['left_wrist']]
+            right_wrist_conf = confidences[self.KEYPOINTS['right_wrist']]
+            left_elbow_conf = confidences[self.KEYPOINTS['left_elbow']]
+            right_elbow_conf = confidences[self.KEYPOINTS['right_elbow']]
+            
+            violence_indicators = 0
+            
+            # Check for extended arm motions (punching-like)
+            if (left_shoulder_conf > self.CONFIDENCE_THRESHOLD and 
+                left_wrist_conf > self.CONFIDENCE_THRESHOLD and
+                left_elbow_conf > self.CONFIDENCE_THRESHOLD):
+                
+                # Calculate if left arm is extended outward
+                shoulder_to_elbow = np.linalg.norm(np.array(left_elbow) - np.array(left_shoulder))
+                elbow_to_wrist = np.linalg.norm(np.array(left_wrist) - np.array(left_elbow))
+                shoulder_to_wrist = np.linalg.norm(np.array(left_wrist) - np.array(left_shoulder))
+                
+                # If arm is relatively straight and extended
+                if shoulder_to_wrist > (shoulder_to_elbow + elbow_to_wrist) * 0.8:
+                    violence_indicators += 1
+            
+            if (right_shoulder_conf > self.CONFIDENCE_THRESHOLD and 
+                right_wrist_conf > self.CONFIDENCE_THRESHOLD and
+                right_elbow_conf > self.CONFIDENCE_THRESHOLD):
+                
+                # Calculate if right arm is extended outward
+                shoulder_to_elbow = np.linalg.norm(np.array(right_elbow) - np.array(right_shoulder))
+                elbow_to_wrist = np.linalg.norm(np.array(right_wrist) - np.array(right_elbow))
+                shoulder_to_wrist = np.linalg.norm(np.array(right_wrist) - np.array(right_shoulder))
+                
+                # If arm is relatively straight and extended
+                if shoulder_to_wrist > (shoulder_to_elbow + elbow_to_wrist) * 0.8:
+                    violence_indicators += 1
+            
+            # Check for wide arm positioning (fighting stance)
+            if (left_wrist_conf > self.CONFIDENCE_THRESHOLD and 
+                right_wrist_conf > self.CONFIDENCE_THRESHOLD):
+                wrist_distance = np.linalg.norm(np.array(left_wrist) - np.array(right_wrist))
+                shoulder_distance = np.linalg.norm(np.array(left_shoulder) - np.array(right_shoulder))
+                
+                # If wrists are much wider than shoulders (fighting stance)
+                if wrist_distance > shoulder_distance * 2.0:
+                    violence_indicators += 1
+            
+            # Return True if multiple violence indicators are present
+            return violence_indicators >= 2
+            
+        except Exception as e:
+            logger.error(f"Error detecting violence-like motion: {e}")
+            return False
+
+    def analyze_keypoints(self, keypoints, confidences, image_shape):
+        """Analyze keypoints for choking detection"""
         features = {
-            'left_wrist_at_neck': False,
-            'right_wrist_at_neck': False,
-            'both_wrists_at_neck': False,
-            'finger_at_neck': False,
-            'eyes_closed': False,
-            'choking_state': "NORMAL",
-            'choking_probability': 0.0
+            'both_hands_at_neck': False,
+            'hands_symmetric': False,
+            'wrists_close': False,
+            'individual_wrist_at_neck': False,
+            'side_pose_detected': False,
+            'arm_directed_to_neck': False,
+            'wrist_elbow_near_neck': False,
+            'violence_like_motion': False,
+            'detection_state': "NORMAL",
+            'detection_probability': 0.0,
+            'detection_type': 'choking'
         }
         
-        # Calculate neck center
         neck_center, neck_detected = self.calculate_neck_center(keypoints, confidences)
         if not neck_detected:
             return features
 
-        # Check wrist positions
+        # Detect side pose
+        features['side_pose_detected'] = self.detect_side_pose(keypoints, confidences)
+        
+        # Check wrist/elbow proximity to neck
+        proximity_results = self.check_wrist_elbow_near_neck(keypoints, confidences, neck_center, image_shape)
+        features['wrist_elbow_near_neck'] = proximity_results['any_near']
+        
         left_wrist = keypoints[self.KEYPOINTS['left_wrist']]
         right_wrist = keypoints[self.KEYPOINTS['right_wrist']]
+        left_elbow = keypoints[self.KEYPOINTS['left_elbow']]
+        right_elbow = keypoints[self.KEYPOINTS['right_elbow']]
         left_wrist_conf = confidences[self.KEYPOINTS['left_wrist']]
         right_wrist_conf = confidences[self.KEYPOINTS['right_wrist']]
+        
+        # Check arm direction towards neck using cosine similarity
+        left_arm_directed, left_cosine = self.check_arm_direction_to_neck(
+            left_wrist, left_elbow, neck_center, confidences, 'left'
+        )
+        right_arm_directed, right_cosine = self.check_arm_direction_to_neck(
+            right_wrist, right_elbow, neck_center, confidences, 'right'
+        )
+        features['arm_directed_to_neck'] = left_arm_directed or right_arm_directed
 
-        if left_wrist_conf > self.CONFIDENCE_THRESHOLD:
-            left_dist = self.calculate_wrist_to_neck_distance(left_wrist, neck_center, image_shape)
-            if left_dist < self.WRIST_NECK_THRESHOLD:
-                features['left_wrist_at_neck'] = True
-
-        if right_wrist_conf > self.CONFIDENCE_THRESHOLD:
-            right_dist = self.calculate_wrist_to_neck_distance(right_wrist, neck_center, image_shape)
-            if right_dist < self.WRIST_NECK_THRESHOLD:
-                features['right_wrist_at_neck'] = True
-
-        features['both_wrists_at_neck'] = features['left_wrist_at_neck'] and features['right_wrist_at_neck']
-        features['eyes_closed'] = self.detect_eye_closed(keypoints, confidences)
-
-        # Check finger-to-neck proximity
-        FINGER_NECK_THRESHOLD = 0.10
-        if finger_tips:
-            for fx, fy in finger_tips:
-                finger_dist = np.linalg.norm(np.array([fx, fy]) - np.array(neck_center))
-                image_diagonal = math.sqrt(image_shape[0] ** 2 + image_shape[1] ** 2)
-                norm_finger_dist = finger_dist / image_diagonal
-                if norm_finger_dist < FINGER_NECK_THRESHOLD:
-                    features['finger_at_neck'] = True
-                    break
-
-        # Determine choking state - only recognize choking when both wrists are at neck
-        if features['both_wrists_at_neck']:
-            features['choking_state'] = "CHOKING"
-            features['choking_probability'] = 0.9
+        # Both wrists must have sufficient confidence for proper choking detection
+        if (left_wrist_conf > self.CONFIDENCE_THRESHOLD and 
+            right_wrist_conf > self.CONFIDENCE_THRESHOLD):
+            
+            # Check if both hands are positioned at neck
+            features['both_hands_at_neck'] = self.check_both_hands_at_neck(
+                left_wrist, right_wrist, neck_center, image_shape
+            )
+            
+            # Check hand symmetry (both hands equidistant from neck)
+            features['hands_symmetric'] = self.check_hand_symmetry(
+                left_wrist, right_wrist, neck_center, image_shape
+            )
+            
+            # Check if wrists are close to each other
+            wrist_distance = self.calculate_wrist_distance(left_wrist, right_wrist, image_shape)
+            features['wrists_close'] = wrist_distance < self.WRIST_DISTANCE_THRESHOLD
+            
         else:
-            features['choking_state'] = "NORMAL"
-            features['choking_probability'] = 0.0
+            # Check individual wrists if only one has good confidence
+            left_at_neck = False
+            right_at_neck = False
+            
+            if left_wrist_conf > self.CONFIDENCE_THRESHOLD:
+                left_dist = self.calculate_wrist_to_neck_distance(left_wrist, neck_center, image_shape)
+                left_at_neck = left_dist < self.WRIST_NECK_THRESHOLD
+                
+            if right_wrist_conf > self.CONFIDENCE_THRESHOLD:
+                right_dist = self.calculate_wrist_to_neck_distance(right_wrist, neck_center, image_shape)
+                right_at_neck = right_dist < self.WRIST_NECK_THRESHOLD
+                
+            features['individual_wrist_at_neck'] = left_at_neck or right_at_neck
+
+        # Detect potential violence-like motions to reduce false positives
+        features['violence_like_motion'] = self.detect_violence_like_motion(keypoints, confidences)
+        
+        # Enhanced choking detection logic with violence differentiation
+        if features['violence_like_motion']:
+            # Reduce probability if violence-like motion detected
+            features['detection_state'] = "POSSIBLE VIOLENCE (NOT CHOKING)"
+            features['detection_probability'] = 0.1
+        elif (features['both_hands_at_neck'] and 
+              features['hands_symmetric'] and 
+              features['wrists_close'] and
+              features['arm_directed_to_neck']):
+            features['detection_state'] = "CHOKING (HIGH CONFIDENCE)"
+            features['detection_probability'] = 0.95
+        elif (features['side_pose_detected'] and 
+              features['wrist_elbow_near_neck'] and 
+              features['arm_directed_to_neck']):
+            features['detection_state'] = "CHOKING (SIDE POSE)"
+            features['detection_probability'] = 0.9
+        elif features['both_hands_at_neck'] and features['wrists_close']:
+            features['detection_state'] = "CHOKING (BOTH HANDS CLOSE)"
+            features['detection_probability'] = 0.85
+        elif features['both_hands_at_neck'] and features['arm_directed_to_neck']:
+            features['detection_state'] = "CHOKING (DIRECTED ARMS)"
+            features['detection_probability'] = 0.8
+        elif features['both_hands_at_neck']:
+            features['detection_state'] = "CHOKING (BOTH HANDS AT NECK)"
+            features['detection_probability'] = 0.75
+        elif features['wrist_elbow_near_neck'] and features['arm_directed_to_neck']:
+            features['detection_state'] = "POSSIBLE CHOKING (ARM DIRECTED)"
+            features['detection_probability'] = 0.7
+        elif features['individual_wrist_at_neck']:
+            features['detection_state'] = "POSSIBLE CHOKING (ONE HAND)"
+            features['detection_probability'] = 0.6
+        else:
+            features['detection_state'] = "NORMAL"
+            features['detection_probability'] = 0.0
 
         return features
+
+    def draw_annotations(self, frame, keypoints, confidences, features, confidence_threshold):
+        """Draw choking-specific annotations on frame"""
+        try:
+            # Draw skeleton and keypoints
+            frame = self.draw_skeleton(frame, keypoints, confidences, color=(0, 255, 0), thickness=2)
+            frame = self.draw_keypoints(frame, keypoints, confidences, color=(0, 255, 0), radius=5)
+            
+            neck_center, neck_detected = self.calculate_neck_center(keypoints, confidences)
+            left_wrist = keypoints[self.KEYPOINTS['left_wrist']]
+            right_wrist = keypoints[self.KEYPOINTS['right_wrist']]
+            left_wrist_conf = confidences[self.KEYPOINTS['left_wrist']]
+            right_wrist_conf = confidences[self.KEYPOINTS['right_wrist']]
+            
+            if neck_detected:
+                # Draw neck center
+                cv2.circle(frame, (int(neck_center[0]), int(neck_center[1])), 8, (255, 0, 255), -1)
+                
+                # Draw wrist-to-neck connections when both hands are at neck
+                if (features['both_hands_at_neck'] and 
+                    left_wrist_conf > self.CONFIDENCE_THRESHOLD and 
+                    right_wrist_conf > self.CONFIDENCE_THRESHOLD):
+                    
+                    # Red lines to show both hands at neck
+                    cv2.line(frame, (int(left_wrist[0]), int(left_wrist[1])), 
+                            (int(neck_center[0]), int(neck_center[1])), (0, 0, 255), 3)
+                    cv2.line(frame, (int(right_wrist[0]), int(right_wrist[1])), 
+                            (int(neck_center[0]), int(neck_center[1])), (0, 0, 255), 3)
+                    
+                    # Draw line between wrists to show they're close
+                    if features['wrists_close']:
+                        cv2.line(frame, (int(left_wrist[0]), int(left_wrist[1])), 
+                                (int(right_wrist[0]), int(right_wrist[1])), (255, 0, 255), 2)
+                    
+                    # Highlight symmetry with circles
+                    if features['hands_symmetric']:
+                        cv2.circle(frame, (int(left_wrist[0]), int(left_wrist[1])), 12, (0, 255, 255), 2)
+                        cv2.circle(frame, (int(right_wrist[0]), int(right_wrist[1])), 12, (0, 255, 255), 2)
+                
+                # Draw individual wrist connections for partial detection
+                elif features['individual_wrist_at_neck']:
+                    if (left_wrist_conf > self.CONFIDENCE_THRESHOLD and 
+                        self.calculate_wrist_to_neck_distance(left_wrist, neck_center, frame.shape[:2]) < self.WRIST_NECK_THRESHOLD):
+                        cv2.line(frame, (int(left_wrist[0]), int(left_wrist[1])), 
+                                (int(neck_center[0]), int(neck_center[1])), (0, 165, 255), 2)
+                    
+                    if (right_wrist_conf > self.CONFIDENCE_THRESHOLD and 
+                        self.calculate_wrist_to_neck_distance(right_wrist, neck_center, frame.shape[:2]) < self.WRIST_NECK_THRESHOLD):
+                        cv2.line(frame, (int(right_wrist[0]), int(right_wrist[1])), 
+                                (int(neck_center[0]), int(neck_center[1])), (0, 165, 255), 2)
+                
+        except Exception as e:
+            logger.error(f"Error drawing choking annotations: {e}")
+        
+        return frame
+
+    def enhance_with_mediapipe(self, frame, yolo_features):
+        """Enhance detection using MediaPipe for additional precision"""
+        try:
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_results = self.pose.process(rgb_frame)
+            
+            if mp_results.pose_landmarks:
+                # Extract MediaPipe landmarks
+                landmarks = mp_results.pose_landmarks.landmark
+                
+                # Get key points from MediaPipe
+                mp_left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
+                mp_right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+                mp_left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+                mp_right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                
+                # Convert to pixel coordinates
+                h, w = frame.shape[:2]
+                mp_left_wrist_px = (int(mp_left_wrist.x * w), int(mp_left_wrist.y * h))
+                mp_right_wrist_px = (int(mp_right_wrist.x * w), int(mp_right_wrist.y * h))
+                
+                # Check if MediaPipe detects hands near neck area
+                neck_y = int((landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER].y + 
+                             landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER].y) * h / 2)
+                
+                # Enhanced detection if MediaPipe confirms hand positions
+                if (abs(mp_left_wrist_px[1] - neck_y) < h * 0.1 or 
+                    abs(mp_right_wrist_px[1] - neck_y) < h * 0.1):
+                    yolo_features['detection_probability'] = min(1.0, yolo_features['detection_probability'] * 1.2)
+                    
+            return yolo_features
+            
+        except Exception as e:
+            logger.error(f"Error in MediaPipe enhancement: {e}")
+            return yolo_features
+    
+    def analyze(self, frame, confidence, alert_threshold, finger_tips=None):
+        try:
+            results = self.model(frame, conf=confidence, verbose=False)
+            annotated_frame = frame.copy()
+            max_probability = 0.0
+            detected = False
+            best_features = None
+            
+            for result in results:
+                if result.keypoints is not None:
+                    keypoints = self.safe_tensor_to_numpy(result.keypoints.xy)
+                    confidences = self.safe_tensor_to_numpy(result.keypoints.conf)
+                    
+                    if keypoints.size == 0 or confidences.size == 0:
+                        continue
+                    
+                    for kpts, confs in zip(keypoints, confidences):
+                        features = self.analyze_keypoints(kpts, confs, frame.shape[:2])
+                        
+                        # Enhance with MediaPipe if probability is significant
+                        if features['detection_probability'] > 0.5:
+                            features = self.enhance_with_mediapipe(frame, features)
+                        
+                        if features['detection_probability'] > max_probability:
+                            max_probability = features['detection_probability']
+                            best_features = features
+                        
+                        annotated_frame = self.draw_annotations(
+                            annotated_frame, kpts, confs, features, confidence
+                        )
+                        
+                        if features['detection_probability'] >= alert_threshold:
+                            detected = True
+            
+            detection_status = {
+                'type': 'choking',
+                'detected': detected,
+                'probability': max_probability,
+                'state': best_features['detection_state'] if best_features else 'NORMAL',
+                'features': best_features if best_features else {}
+            }
+            
+            return annotated_frame, detection_status
+            
+        except Exception as e:
+            logger.error(f"Error in choking analysis: {e}")
+            detection_status = {
+                'type': 'choking',
+                'detected': False,
+                'probability': 0.0,
+                'state': 'ERROR'
+            }
+            return frame, detection_status
