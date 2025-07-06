@@ -633,10 +633,10 @@ class EnhancedCameraProcessor:
     def update_camera_data(self, camera):
         """Update camera data"""
         self.camera = camera
-        config = self.manager.model_manager.get_detector_config('fire_smoke')
-        self.confidence_threshold = camera.confidence_threshold or config['conf_threshold']
-        self.iou_threshold = camera.iou_threshold or config['iou_threshold']
-        self.image_size = camera.image_size or config['image_size']
+        # config = self.manager.model_manager.get_detector_config('fire_smoke')
+        # self.confidence_threshold = camera.confidence_threshold or config['conf_threshold']
+        # self.iou_threshold = camera.iou_threshold or config['iou_threshold']
+        # self.image_size = camera.image_size or config['image_size']
         
     def _process_loop(self):
         """Main processing loop for this camera"""
