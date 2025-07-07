@@ -427,6 +427,7 @@ class EnhancedDetectionManager:
             
             print(f"[INFO] {detector_type.capitalize()} Detector started - Video: {width}x{height} @ {fps}fps")
             
+            
             frame_count = 0
             while True:
                 ret, frame = cap.read()
@@ -441,6 +442,7 @@ class EnhancedDetectionManager:
 
                 # Process frame using the detector class
                 frame = detector_class.process_frame(frame, fps)
+                
 
                 # Show the frame with OpenCV (with detector type in window name)
                 window_name = f"{detector_type.capitalize()} Detection - PID:{multiprocessing.current_process().pid}"

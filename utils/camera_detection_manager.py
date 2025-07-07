@@ -12,8 +12,8 @@ import torch
 from cameras.models import Camera
 from alerts.models import Alert
 from detectors import ViolenceDetector
-from utils.model_manager import ModelManager
-from utils.enhanced_video_processor import EnhancedVideoProcessor
+# from utils.model_manager import ModelManager
+# from utils.enhanced_video_processor import EnhancedVideoProcessor
 
 logger = logging.getLogger('security_ai')
 
@@ -24,8 +24,8 @@ class CameraDetectionManager:
     
     def __init__(self):
         self.active_cameras = {}  # camera_id -> CameraProcessor
-        self.model_manager = ModelManager()
-        self.video_processor = EnhancedVideoProcessor(self.model_manager)
+        # self.model_manager = ModelManager()
+        # self.video_processor = EnhancedVideoProcessor(self.model_manager)
         self.is_running = False
         self.main_thread = None
         self.stop_event = threading.Event()
@@ -170,12 +170,12 @@ class CameraDetectionManager:
             camera_id = str(camera.id)
             logger.info(f"Starting processor for camera {camera_id} - {camera.name}")
             
-            processor = CameraProcessor(
-                camera, self.detectors, self.device, self, self.video_processor
-            )
-            processor.start()
+            # processor = CameraProcessor(
+            #     camera, self.detectors, self.device, self, self.video_processor
+            # )
+            # processor.start()
             
-            self.active_cameras[camera_id] = processor
+            # self.active_cameras[camera_id] = processor
             
         except Exception as e:
             logger.error(f"Error starting processor for camera {camera.id}: {str(e)}")
@@ -223,22 +223,23 @@ class CameraDetectionManager:
         
     def create_pending_alert(self, camera, alert_type, confidence, frame, detection_results):
         """Create alert for reviewer confirmation instead of direct notification"""
-        try:
-            # Use the enhanced video processor to create alert with video
-            alert = self.video_processor.process_detection_with_video(
-                camera, alert_type, confidence, detection_results
-            )
+        print("Hello from create_pending_alert")
+        # try:
+        #     # Use the enhanced video processor to create alert with video
+        #     alert = self.video_processor.process_detection_with_video(
+        #         camera, alert_type, confidence, detection_results
+        #     )
             
-            if alert:
-                logger.info(f"Created pending alert {alert.id} for {alert_type} detection on camera {camera.id}")
-                return alert
-            else:
-                logger.error(f"Failed to create pending alert for {alert_type} detection")
-                return None
+        #     if alert:
+        #         logger.info(f"Created pending alert {alert.id} for {alert_type} detection on camera {camera.id}")
+        #         return alert
+        #     else:
+        #         logger.error(f"Failed to create pending alert for {alert_type} detection")
+        #         return None
                 
-        except Exception as e:
-            logger.error(f"Error creating pending alert: {str(e)}")
-            return None
+        # except Exception as e:
+        #     logger.error(f"Error creating pending alert: {str(e)}")
+        #     return None
 
 
 class CameraProcessor:
@@ -251,7 +252,7 @@ class CameraProcessor:
         self.detectors = detectors
         self.device = device
         self.manager = manager
-        self.video_processor = video_processor
+        # self.video_processor = video_processor
         
         self.is_running = False
         self.thread = None
@@ -408,26 +409,27 @@ class CameraProcessor:
 
     def _create_detection_alert_with_bbox(self, detector_type, confidence, frame, detection_results):
         """Create detection alert with bounding box video"""
-        try:
-            # Use the enhanced video processor to create alert with bounding box video
-            alert = self.video_processor.process_detection_with_video_and_bbox(
-                self.camera,
-                detector_type,
-                confidence,
-                detection_results,
-                frame
-            )
+        print("Hello from _create_detection_alert_with_bbox")
+        # try:
+        #     # Use the enhanced video processor to create alert with bounding box video
+        #     alert = self.video_processor.process_detection_with_video_and_bbox(
+        #         self.camera,
+        #         detector_type,
+        #         confidence,
+        #         detection_results,
+        #         frame
+        #     )
             
-            if alert:
-                logger.info(f"Created detection alert {alert.id} with bounding box video for {detector_type} on camera {self.camera.id}")
-                return alert
-            else:
-                logger.error(f"Failed to create detection alert with bounding box video for {detector_type}")
-                return None
+        #     if alert:
+        #         logger.info(f"Created detection alert {alert.id} with bounding box video for {detector_type} on camera {self.camera.id}")
+        #         return alert
+        #     else:
+        #         logger.error(f"Failed to create detection alert with bounding box video for {detector_type}")
+        #         return None
                 
-        except Exception as e:
-            logger.error(f"Error creating detection alert with bounding box video: {str(e)}")
-            return None
+        # except Exception as e:
+        #     logger.error(f"Error creating detection alert with bounding box video: {str(e)}")
+        #     return None
 
     def _check_detection_results(self, results, conf_threshold):
         """Check detection results for valid detections"""

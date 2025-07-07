@@ -26,14 +26,14 @@ except ImportError:
     ENHANCED_AVAILABLE = False
     logger.warning("Enhanced detection manager not available")
 
-from utils.camera_detection_manager import detection_manager as original_detection_manager
+# from utils.camera_detection_manager import detection_manager as original_detection_manager
 
 def get_active_detection_manager():
     """Get the appropriate detection manager"""
     if ENHANCED_AVAILABLE:
         return enhanced_detection_manager
-    else:
-        return original_detection_manager
+    # else:
+    #     return original_detection_manager
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsAdminUser])

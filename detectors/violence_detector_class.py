@@ -5,6 +5,7 @@ import os
 import time
 import subprocess
 from datetime import datetime
+import threading
 import tensorrt as trt
 import pycuda.driver as cuda
 from django.conf import settings
@@ -40,11 +41,14 @@ class ViolenceDetector:
         self.host_output = None
         self.lb = None
         
+        self._is_initialized = False
+        self._initialization_lock = threading.Lock()
+        
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Initialize components
-        # self._initialize_components()
+        self._initialize_components()
 
     def _check_cuda_availability(self):
         """Check if CUDA is available and properly configured."""

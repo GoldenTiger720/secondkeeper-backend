@@ -1,7 +1,7 @@
 # utils/__init__.py - Updated to use enhanced detection manager by default
 
-from .model_manager import ModelManager
-from .enhanced_video_processor import EnhancedVideoProcessor
+# from .model_manager import ModelManager
+# from .enhanced_video_processor import EnhancedVideoProcessor
 from .permissions import IsOwnerOrAdmin, IsAdminUser, IsManagerOrAdminOrReviewer
 from .exception_handlers import custom_exception_handler
 from .stream_proxy import StreamProxy
@@ -12,12 +12,12 @@ try:
     ENHANCED_DETECTION_AVAILABLE = True
 except ImportError:
     # Fallback to original if enhanced is not available
-    from .camera_detection_manager import detection_manager
+    # from .camera_detection_manager import detection_manager
     ENHANCED_DETECTION_AVAILABLE = False
 
 __all__ = [
-    'ModelManager', 
-    'EnhancedVideoProcessor', 
+    # 'ModelManager', 
+    # 'EnhancedVideoProcessor', 
     'IsOwnerOrAdmin',
     'IsAdminUser',
     'IsManagerOrAdminOrReviewer',
@@ -75,12 +75,12 @@ class Command(BaseCommand):
                 
             except ImportError:
                 self.stdout.write(self.style.WARNING('Enhanced detection not available, using standard detection...'))
-                from utils.camera_detection_manager import detection_manager
-                self.detection_manager = detection_manager
+                # from utils.camera_detection_manager import detection_manager
+                # self.detection_manager = detection_manager
         else:
             self.stdout.write(self.style.WARNING('Forced standard detection mode...'))
-            from utils.camera_detection_manager import detection_manager
-            self.detection_manager = detection_manager
+            # from utils.camera_detection_manager import detection_manager
+            # self.detection_manager = detection_manager
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)

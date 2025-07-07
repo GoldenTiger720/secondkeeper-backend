@@ -39,13 +39,13 @@ class CamerasConfig(AppConfig):
                 except Exception as e:
                     logger.error(f"Failed to auto-start enhanced detection service: {str(e)}")
                     # Fallback to original detection manager
-                    try:
-                        from utils.camera_detection_manager import detection_manager
-                        logger.info("Falling back to original detection manager...")
-                        detection_manager.start()
-                        logger.info("Original Camera Detection Service started as fallback")
-                    except Exception as e2:
-                        logger.error(f"Failed to start fallback detection service: {str(e2)}")
+                    # try:
+                    #     from utils.camera_detection_manager import detection_manager
+                    #     logger.info("Falling back to original detection manager...")
+                    #     detection_manager.start()
+                    #     logger.info("Original Camera Detection Service started as fallback")
+                    # except Exception as e2:
+                    #     logger.error(f"Failed to start fallback detection service: {str(e2)}")
             
             # Start in a separate thread
             thread = threading.Thread(target=start_enhanced_detection_service, daemon=True)
