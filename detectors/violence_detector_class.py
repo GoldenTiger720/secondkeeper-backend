@@ -7,12 +7,12 @@ import subprocess
 from datetime import datetime
 import threading
 import tensorrt as trt
+# Import pycuda driver only, we'll manage contexts manually for threading
 import pycuda.driver as cuda
 from django.conf import settings
-# Do NOT import pycuda.autoinit here - we'll manage CUDA context manually
 
 class ViolenceDetector:
-    def __init__(self):
+    def __init__(self, camera_id=None):
         # Parameters for RTSP URL and video file
         self.rtsp_url = "rtsp://admin:@2.55.92.197/play1.sdp"
         self.video_file = "video.mp4"
@@ -21,7 +21,6 @@ class ViolenceDetector:
         self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence')
         self.engine_path = settings.MODEL_PATHS['violence']
         self.label_binarizer_path = settings.PICKLE_PATHS['violence']
-        print("=========================================>", self.output_dir, self.engine_path, self.label_binarizer_path)
         self.image_size = 128
         self.violence_label = "Violence"
         self.clip_duration_seconds = 5
@@ -29,6 +28,12 @@ class ViolenceDetector:
         self.last_clip_saved_time = 0
         self.thumbnail_saved = False
         self.frame_buffer = []
+        
+        # Camera and database settings
+        self.camera_id = camera_id
+        self.camera = None
+        self.alert_cooldown = 30  # Seconds between alerts for same detection type
+        self.last_alert_time = 0
         
         # Initialize CUDA context and TensorRT components
         self.cuda_context = None
@@ -42,13 +47,49 @@ class ViolenceDetector:
         self.lb = None
         
         self._is_initialized = False
-        self._initialization_lock = threading.Lock()
+        self._initialization_lock = None  # Will be created in process
+        self._initialization_error = None
         
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Initialize components
-        self._initialize_components()
+        # Initialize camera if camera_id provided
+        self._initialize_camera()
+        
+        # Delay initialization until process_frame is called in the thread
+        print("[INFO] ViolenceDetector created, will initialize in worker thread")
+
+    def _initialize_camera(self):
+        """Initialize camera object if camera_id is provided"""
+        from cameras.models import Camera
+        
+        if self.camera_id:
+            try:
+                self.camera = Camera.objects.get(id=self.camera_id)
+                print(f"[INFO] ViolenceDetector linked to camera: {self.camera.name}")
+            except Camera.DoesNotExist:
+                print(f"[WARNING] Camera with ID {self.camera_id} not found")
+                self.camera = None
+        else:
+            # Create a default test camera for video file processing
+            try:
+                self.camera, created = Camera.objects.get_or_create(
+                    name="Test Video Camera",
+                    stream_url="file://test_video",
+                    defaults={
+                        'user_id': 1,  # Assuming admin user ID is 1
+                        'status': 'online',
+                        'detection_enabled': True,
+                        'violence_detection': True
+                    }
+                )
+                if created:
+                    print("[INFO] Created test camera for ViolenceDetector")
+                else:
+                    print("[INFO] Using existing test camera for ViolenceDetector")
+            except Exception as e:
+                print(f"[ERROR] Failed to create/get test camera: {e}")
+                self.camera = None
 
     def _check_cuda_availability(self):
         """Check if CUDA is available and properly configured."""
@@ -71,62 +112,68 @@ class ViolenceDetector:
             raise RuntimeError(f"CUDA availability check failed: {e}")
 
     def _initialize_components(self):
-        """Initialize all CUDA and TensorRT components in the current process."""
-        try:
-            # Check CUDA availability first
-            self._check_cuda_availability()
+        """Initialize all CUDA and TensorRT components."""
+        # Create lock if it doesn't exist
+        if self._initialization_lock is None:
+            self._initialization_lock = threading.Lock()
             
-            # Initialize CUDA in this process (each process needs its own CUDA context)
+        with self._initialization_lock:
+            if self._is_initialized:
+                return
+                
             try:
-                # Check if CUDA is already initialized
+                print(f"[INFO] Initializing ViolenceDetector in thread {threading.current_thread().name}")
+                
+                # Initialize CUDA in this thread
                 try:
                     cuda.Device.count()
-                    print("[INFO] CUDA already initialized")
+                    print("[INFO] CUDA driver already initialized")
                 except cuda.LogicError:
-                    # CUDA not initialized, initialize it
                     cuda.init()
-                    print("[INFO] CUDA initialized successfully")
-            except Exception as cuda_init_error:
-                print(f"[ERROR] CUDA initialization failed: {cuda_init_error}")
+                    print("[INFO] CUDA driver initialized")
+                
+                # Check CUDA availability first
+                self._check_cuda_availability()
+                
+                # Check if we have any CUDA devices
+                device_count = cuda.Device.count()
+                if device_count == 0:
+                    raise RuntimeError("No CUDA devices found")
+                
+                print(f"[INFO] Found {device_count} CUDA device(s)")
+                
+                # Get device info and create context for this thread
+                device = cuda.Device(0)
+                print(f"[INFO] Using device: {device.name()}")
+                print(f"[INFO] Device compute capability: {device.compute_capability()}")
+                
+                # Create a new CUDA context for this thread
+                self.cuda_context = device.make_context()
+                print("[INFO] CUDA context created for thread")
+                
+                # Load label binarizer
+                with open(self.label_binarizer_path, "rb") as f:
+                    self.lb = pickle.load(f)
+                print("[INFO] Label binarizer loaded successfully")
+
+                # Load TensorRT engine
+                self.engine = self.load_engine(self.engine_path)
+                self.context = self.engine.create_execution_context()
+                print("[INFO] TensorRT engine loaded successfully")
+
+                # Prepare input/output bindings and memory allocations
+                self.prepare_memory()
+                print("[INFO] Memory allocation completed successfully")
+                
+                print(f"[INFO] ViolenceDetector initialized successfully in thread {threading.current_thread().name}")
+                self._is_initialized = True
+                
+            except Exception as e:
+                self._initialization_error = str(e)
+                print(f"[ERROR] Failed to initialize ViolenceDetector: {e}")
+                import traceback
+                traceback.print_exc()
                 raise
-            
-            # Check if we have any CUDA devices
-            device_count = cuda.Device.count()
-            if device_count == 0:
-                raise RuntimeError("No CUDA devices found")
-            
-            print(f"[INFO] Found {device_count} CUDA device(s)")
-            
-            # Get device info
-            device = cuda.Device(0)
-            print(f"[INFO] Using device: {device.name()}")
-            print(f"[INFO] Device compute capability: {device.compute_capability()}")
-            
-            # Create CUDA context
-            self.cuda_context = device.make_context()
-            print("[INFO] CUDA context created successfully")
-            
-            # Load label binarizer
-            with open(self.label_binarizer_path, "rb") as f:
-                self.lb = pickle.load(f)
-            print("[INFO] Label binarizer loaded successfully")
-
-            # Load TensorRT engine
-            self.engine = self.load_engine(self.engine_path)
-            self.context = self.engine.create_execution_context()
-            print("[INFO] TensorRT engine loaded successfully")
-
-            # Prepare input/output bindings and memory allocations
-            self.prepare_memory()
-            print("[INFO] Memory allocation completed successfully")
-            
-            print(f"[INFO] ViolenceDetector initialized successfully in process {os.getpid()}")
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to initialize ViolenceDetector: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
 
     def load_engine(self, path):
         """Load the TensorRT engine from the specified path."""
@@ -194,12 +241,21 @@ class ViolenceDetector:
 
     def process_frame(self, frame, fps):
         try:
-            # Check if initialization was successful
+            # Initialize in the worker thread if not done yet
+            if not self._is_initialized:
+                try:
+                    self._initialize_components()
+                    self._is_initialized = True
+                except Exception as e:
+                    self._initialization_error = str(e)
+                    print(f"[ERROR] Failed to initialize ViolenceDetector: {e}")
+                    return frame
+            
             if self.host_input is None or self.lb is None:
                 print("[ERROR] ViolenceDetector not properly initialized")
                 return frame
             
-            # Ensure CUDA context is active
+            # Push CUDA context for this thread
             if self.cuda_context:
                 self.cuda_context.push()
             
@@ -230,7 +286,7 @@ class ViolenceDetector:
             if len(self.frame_buffer) > fps * self.cooldown_seconds:
                 self.frame_buffer.pop(0)
             if label == self.violence_label and confidence >= 0.98:
-                self.save_clip(frame, current_time)
+                self.save_clip(frame, current_time, confidence)
                 print(f"[INFO] Violence detected with confidence: {confidence:.2f}")
                 
             # Draw detection info on frame
@@ -304,18 +360,21 @@ class ViolenceDetector:
             print(f"Error during FFmpeg conversion: {str(e)}")
             return video_path
 
-    def save_clip(self, frame, current_time):
+    def save_clip(self, frame, current_time, confidence=0.98):
         try:
-            if not self.thumbnail_saved:
-                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                thumbnail_path = os.path.join(self.output_dir, f"violence_thumbnail_{timestamp_str}.jpg")
-                cv2.imwrite(thumbnail_path, frame)
-                self.thumbnail_saved = True
-                print(f"[INFO] Saved thumbnail: {thumbnail_path}")
+            # Check alert cooldown
+            if current_time - self.last_alert_time < self.alert_cooldown:
+                return
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Save thumbnail
+            thumbnail_path = os.path.join(self.output_dir, f"violence_thumbnail_{timestamp}.jpg")
+            cv2.imwrite(thumbnail_path, frame)
+            print(f"[INFO] Saved thumbnail: {thumbnail_path}")
 
             # Check cooldown before saving clip
             if current_time - self.last_clip_saved_time > self.cooldown_seconds:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_path = os.path.join(self.output_dir, f"violence_{timestamp}.mp4")
 
                 # Open video writer to save the clip
@@ -333,13 +392,89 @@ class ViolenceDetector:
                     clip_writer.write(buf_frame)
                 clip_writer.release()
                 self.last_clip_saved_time = current_time
-                self.convert_to_web_compatible(output_path)
+                
+                # Convert to web compatible format
+                web_compatible_path = self.convert_to_web_compatible(output_path)
+                if web_compatible_path != output_path and os.path.exists(web_compatible_path):
+                    try:
+                        os.remove(output_path)  # Remove original file
+                        video_path = web_compatible_path
+                    except:
+                        video_path = output_path
+                else:
+                    video_path = output_path
+                
                 self.frame_buffer.clear()
-                os.remove(output_path)  # Remove the original file if needed
-                print(f"[INFO] Saved clip to {output_path}")
+                print(f"[INFO] Saved clip to {video_path}")
+                
+                # Create alert in database
+                self._create_alert(video_path, thumbnail_path, confidence, timestamp)
+                self.last_alert_time = current_time
                 
         except Exception as e:
             print(f"[ERROR] Error saving clip: {e}")
+
+    def _create_alert(self, video_path, thumbnail_path, confidence, timestamp):
+        """Create alert in database"""
+        from django.db import transaction
+        from django.utils import timezone
+        from alerts.models import Alert
+        
+        try:
+            if not self.camera:
+                print("[WARNING] No camera configured, skipping alert creation")
+                return None
+                
+            # Determine severity based on confidence
+            severity = self._determine_alert_severity(confidence)
+            
+            # Get relative paths for database storage
+            video_relative_path = os.path.relpath(video_path, settings.MEDIA_ROOT)
+            thumbnail_relative_path = os.path.relpath(thumbnail_path, settings.MEDIA_ROOT)
+            
+            # Create title and description
+            if hasattr(self.camera.user, 'role') and self.camera.user.role == 'admin':
+                title = "TEST Violence Detection"
+                description = f"Test detection of violence with {confidence:.2f} confidence. Video clip recorded with detection highlights."
+            else:
+                title = "Violence Detection Alert"
+                description = f"Detected violence on camera {self.camera.name} with {confidence:.2f} confidence. Video clip recorded for review."
+            
+            # Create alert with database transaction
+            with transaction.atomic():
+                alert = Alert.objects.create(
+                    title=title,
+                    description=description,
+                    alert_type='violence',
+                    severity=severity,
+                    confidence=confidence,
+                    camera=self.camera,
+                    location=self.camera.name,
+                    video_file=video_relative_path,
+                    thumbnail=thumbnail_relative_path,
+                    status='pending_review',
+                    notes=f"Video clip recorded. Timestamp: {timestamp}. Thread: {threading.current_thread().name}"
+                )
+                
+                print(f"[INFO] Alert {alert.id} created successfully for violence detection on camera {self.camera.id}")
+                return alert
+                
+        except Exception as e:
+            print(f"[ERROR] Error creating alert: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _determine_alert_severity(self, confidence):
+        """Determine alert severity based on confidence"""
+        if confidence >= 0.9:
+            return 'critical'
+        elif confidence >= 0.7:
+            return 'high'
+        elif confidence >= 0.5:
+            return 'medium'
+        else:
+            return 'low'
 
     def cleanup(self):
         """Clean up resources when done."""
@@ -349,9 +484,12 @@ class ViolenceDetector:
             if self.d_output:
                 self.d_output.free()
             if self.cuda_context:
-                self.cuda_context.pop()
-                self.cuda_context.detach()
-            print(f"[INFO] ViolenceDetector cleanup completed for process {os.getpid()}")
+                try:
+                    self.cuda_context.pop()
+                    self.cuda_context.detach()
+                except:
+                    pass
+            print(f"[INFO] ViolenceDetector cleanup completed for thread {threading.current_thread().name}")
         except Exception as e:
             print(f"[ERROR] Error during cleanup: {e}")
 

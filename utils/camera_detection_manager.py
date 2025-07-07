@@ -34,7 +34,7 @@ class CameraDetectionManager:
         self.detectors = {
             # 'fire_smoke': FireSmokeDetector(),
             # 'fall': FallDetector(),
-            'violence': ViolenceDetector(),
+            # 'violence': ViolenceDetector(),
             # 'choking': ChokingDetector()
         }
         
