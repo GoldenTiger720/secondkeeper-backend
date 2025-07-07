@@ -10,6 +10,7 @@ import torch
 from datetime import datetime
 from django.conf import settings
 from django.utils import timezone
+from cameras.models import Camera
 from detectors.fire_detector_class import FireSmokeDetector
 from detectors.choking_detector_class import ChokingDetector
 from detectors.fall_detector_class import FallDetector
@@ -39,7 +40,6 @@ class EnhancedDetectionManager:
         # Detection settings
         self.frame_skip = 5  # Process every 5th frame for performance
         self.enabled_detectors = ['fire', 'fall', 'choking', 'violence']
-        
         self.video_file = None  # Current video file being processed
         
     def start(self):
@@ -80,19 +80,22 @@ class EnhancedDetectionManager:
     def display_frame(self, detector_config, stop_event=None):
         detector_class = None
         cap = None
-        
         try:
             detector_type = detector_config['detector_type']
+            rtsp_url = detector_config.get('rtsp_url', '')
+            video_file = detector_config.get('video_file', 'video.mp4')
+            use_rtsp = detector_config.get('use_rtsp', False)
+            camera_id = detector_config.get('camera_id', None)
             
-            # Create detector instance based on type
+            # Create detector instance based on type with proper parameters
             if detector_type == 'fire':
-                detector_class = FireSmokeDetector()
+                detector_class = FireSmokeDetector(camera_id=camera_id, rtsp_url=rtsp_url, video_file=video_file, use_rtsp=use_rtsp)
             elif detector_type == 'fall':
-                detector_class = FallDetector()
+                detector_class = FallDetector(camera_id=camera_id, rtsp_url=rtsp_url, video_file=video_file, use_rtsp=use_rtsp)
             elif detector_type == 'choking':
-                detector_class = ChokingDetector()
+                detector_class = ChokingDetector(camera_id=camera_id, rtsp_url=rtsp_url, video_file=video_file, use_rtsp=use_rtsp)
             elif detector_type == 'violence':
-                detector_class = ViolenceDetector()
+                detector_class = ViolenceDetector(camera_id=camera_id, rtsp_url=rtsp_url, video_file=video_file, use_rtsp=use_rtsp)
             else:
                 print(f"[ERROR] Unknown detector type: {detector_type}")
                 return
@@ -105,8 +108,6 @@ class EnhancedDetectionManager:
             fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-            print(f"[INFO] {detector_type.capitalize()} Detector started - Video: {width}x{height} @ {fps}fps")
             
             frame_count = 0
             while not (stop_event and stop_event.is_set()):
@@ -124,8 +125,6 @@ class EnhancedDetectionManager:
                 frame_count += 1
                 if frame_count % 300 == 0:  # Log every 300 frames (10 seconds at 30fps)
                     print(f"[INFO] {detector_type.capitalize()} Detector processed {frame_count} frames")
-                
-                # Small delay to prevent excessive CPU usage
                 time.sleep(0.01)
                     
         except KeyboardInterrupt:
@@ -144,11 +143,10 @@ class EnhancedDetectionManager:
             print(f"[INFO] {detector_config.get('detector_type', 'Unknown')} Detector cleanup completed")
 
     def run_detectors(self):
+        """Run detectors for current video file (backward compatibility)"""
         enabled_detectors = ['violence', 'fire', 'fall', 'choking']
         use_rtsp = False  # Video files do not use RTSP
         rtsp_url = ""  
-        
-        # Create detector configurations (don't initialize the detector objects here)
         detector_configs = []
         
         for detector_type in enabled_detectors:
@@ -156,22 +154,27 @@ class EnhancedDetectionManager:
                 'detector_type': detector_type,
                 'rtsp_url': rtsp_url,
                 'video_file': self.video_file,
-                'use_rtsp': use_rtsp
+                'use_rtsp': use_rtsp,
+                'camera_id': None
             }
             detector_configs.append(detector_config)
             print(f"[INFO] Added {detector_type.capitalize()} Detector to configuration")
 
+        self._run_detector_threads(detector_configs)
+        
+    def _run_detector_threads(self, detector_configs):
+        """Run detector threads with given configurations"""
         if not detector_configs:
             print("[ERROR] No detectors configured!")
             return
 
         # Create a thread for each detector configuration
         threads = []
-        self.stop_events = []
+        stop_events = []
         
         for detector_config in detector_configs:
             stop_event = threading.Event()
-            self.stop_events.append(stop_event)
+            stop_events.append(stop_event)
             
             thread = threading.Thread(
                 target=self.display_frame, 
@@ -190,7 +193,7 @@ class EnhancedDetectionManager:
                 thread.join()
         except KeyboardInterrupt:
             print("[INFO] Stopping all detector threads...")
-            for stop_event in self.stop_events:
+            for stop_event in stop_events:
                 stop_event.set()
             
             # Wait for threads to terminate gracefully
@@ -294,8 +297,23 @@ class EnhancedDetectionManager:
             enabled_detectors = ['violence', 'fire', 'fall', 'choking']
             use_rtsp = False  # Video files do not use RTSP
             rtsp_url = ""
-            self.video_file = video_file  # Set the current video file             
-            self.run_detectors()
+            self.video_file = video_file  # Set the current video file
+            
+            # Create detector configurations for video processing
+            detector_configs = []
+            for detector_type in enabled_detectors:
+                detector_config = {
+                    'detector_type': detector_type,
+                    'rtsp_url': rtsp_url,
+                    'video_file': video_file,
+                    'use_rtsp': use_rtsp,
+                    'camera_id': None
+                }
+                detector_configs.append(detector_config)
+                print(f"[INFO] Added {detector_type.capitalize()} Detector for video file: {video_file}")
+
+            # Start detector threads for video processing
+            self._run_detector_threads(detector_configs)
             
         except Exception as e:
             logger.error(f"Error starting video processor for {video_file}: {str(e)}")
@@ -316,8 +334,27 @@ class EnhancedDetectionManager:
         try:
             camera_id = str(camera.id)
             logger.info(f"Starting processor for camera {camera_id} - {camera.name}")
-            # Camera processing is now handled by individual detector classes
-            # This method is kept for compatibility
+            
+            enabled_detectors = ['violence', 'fire', 'fall', 'choking']
+            use_rtsp = True  # Cameras use RTSP streams
+            rtsp_url = camera.stream_url
+            video_file = ""
+            
+            # Create detector configurations for camera processing
+            detector_configs = []
+            for detector_type in enabled_detectors:
+                detector_config = {
+                    'detector_type': detector_type,
+                    'rtsp_url': rtsp_url,
+                    'video_file': video_file,
+                    'use_rtsp': use_rtsp,
+                    'camera_id': camera.id
+                }
+                detector_configs.append(detector_config)
+                print(f"[INFO] Added {detector_type.capitalize()} Detector for camera: {camera.name}")
+
+            # Start detector threads for camera processing
+            self._run_detector_threads(detector_configs)
             
         except Exception as e:
             logger.error(f"Error starting processor for camera {camera.id}: {str(e)}")

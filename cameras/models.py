@@ -51,6 +51,7 @@ class Camera(models.Model):
         """Return the full stream URL with authentication if needed."""
         if self.username and self.password:
             return self.stream_url
+        return self.stream_url
     
     def update_status(self, status):
         """Update the camera status."""

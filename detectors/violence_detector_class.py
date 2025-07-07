@@ -12,11 +12,11 @@ import pycuda.driver as cuda
 from django.conf import settings
 
 class ViolenceDetector:
-    def __init__(self, camera_id=None):
+    def __init__(self, camera_id=None, rtsp_url="", video_file="video.mp4", use_rtsp=False):
         # Parameters for RTSP URL and video file
-        self.rtsp_url = "rtsp://admin:@2.55.92.197/play1.sdp"
-        self.video_file = "video.mp4"
-        self.use_rtsp = False
+        self.rtsp_url = rtsp_url if rtsp_url else "rtsp://admin:@2.55.92.197/play1.sdp"
+        self.video_file = video_file if video_file else "video.mp4"
+        self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
         self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence')
         self.engine_path = settings.MODEL_PATHS['violence']
