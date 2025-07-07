@@ -10,6 +10,7 @@ import logging
 import queue
 import glob
 import torch
+import multiprocessing
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
@@ -19,11 +20,11 @@ from django.db import transaction
 from concurrent.futures import ThreadPoolExecutor
 from cameras.models import Camera
 from alerts.models import Alert
-from detectors.fire_smoke_detector import FireSmokeDetector
-from detectors.choking_detector import ChokingDetector
-from detectors.fall_detector import FallDetector
-from detectors.violence_detector import ViolenceDetector
-from utils.enhanced_video_processor import EnhancedVideoProcessor
+# from detectors.fire_detector_class import FireSmokeDetector
+# from detectors.choking_detector_class import ChokingDetector
+# from detectors.fall_detector_class import FallDetector
+from detectors.violence_detector_class import ViolenceDetector
+# from utils.enhanced_video_processor import EnhancedVideoProcessor
 
 logger = logging.getLogger('security_ai')
 
@@ -327,8 +328,8 @@ class EnhancedDetectionManager:
     def __init__(self):
         self.active_cameras = {}  # camera_id -> CameraProcessor
         self.active_video_processors = {}  # video_file -> VideoFileProcessor
-        self.video_processor = EnhancedVideoProcessor()
-        self.recording_manager = VideoRecordingManager(self.video_processor)
+        # self.video_processor = EnhancedVideoProcessor()
+        # self.recording_manager = VideoRecordingManager(self.video_processor)
         self.is_running = False
         self.main_thread = None
         self.stop_event = threading.Event()
@@ -336,7 +337,6 @@ class EnhancedDetectionManager:
         # Test video directory
         self.test_video_dir = os.path.join(settings.MEDIA_ROOT, 'testvideo')
         os.makedirs(self.test_video_dir, exist_ok=True)
-        self.app = MultiDetectionSystem()
         # GPU optimization
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
@@ -344,17 +344,17 @@ class EnhancedDetectionManager:
         # Detection settings
         self.frame_skip = 5  # Process every 5th frame for performance
         self.detection_cooldown = 30  # Seconds between detections for same source
+        self.enabled_detectors = ['fire', 'fall', 'choking', 'violence']
         
         # Alert tracking to prevent spam
         self.last_alerts = {}  # source_id -> {alert_type: timestamp}
+        self.video_file = None  # Current video file being processed
         
     def start(self):
         """Start the enhanced detection manager"""
         if self.is_running:
             print("Enhanced detection manager is already running")
             return
-            
-        print("Starting Enhanced Detection Manager with Video File Priority and 15-second Recording")
         self.is_running = True
         self.stop_event.clear()
         
@@ -384,6 +384,146 @@ class EnhancedDetectionManager:
             
         self.active_cameras.clear()
         self.active_video_processors.clear()
+        
+    def display_frame(self, detector_config):
+        detector_class = None
+        cap = None
+        
+        try:
+            detector_type = detector_config['detector_type']
+            
+            # if detector_type == 'fire':
+            #     detector_class = FireSmokeDetector(
+            #         detector_config['rtsp_url'],
+            #         detector_config['video_file'],
+            #         detector_config['use_rtsp']
+            #     )
+            # elif detector_type == 'fall':
+            #     detector_class = FallDetector(
+            #         detector_config['rtsp_url'],
+            #         detector_config['video_file'],
+            #         detector_config['use_rtsp']
+            #     )
+            # elif detector_type == 'choking':
+            #     detector_class = ChokingDetector(
+            #         detector_config['rtsp_url'],
+            #         detector_config['video_file'],
+            #         detector_config['use_rtsp']
+            #     )
+            if detector_type == 'violence':
+                detector_class = ViolenceDetector()
+            else:
+                print(f"[ERROR] Unknown detector type: {detector_type}")
+                return
+            
+            cap = cv2.VideoCapture(detector_class.source)
+            if not cap.isOpened():
+                print(f"[ERROR] Cannot open video: {detector_class.source}")
+                return
+
+            fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            print(f"[INFO] {detector_type.capitalize()} Detector started - Video: {width}x{height} @ {fps}fps")
+            
+            frame_count = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    # If it's a video file, loop it
+                    if not detector_config['use_rtsp']:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
+                    else:
+                        print(f"[INFO] {detector_type.capitalize()} Detector: End of stream reached")
+                        break
+
+                # Process frame using the detector class
+                frame = detector_class.process_frame(frame, fps)
+
+                # Show the frame with OpenCV (with detector type in window name)
+                window_name = f"{detector_type.capitalize()} Detection - PID:{multiprocessing.current_process().pid}"
+                cv2.imshow(window_name, frame)
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print(f"[INFO] {detector_type.capitalize()} Detector: Quit key pressed")
+                    break
+                    
+                frame_count += 1
+                if frame_count % 300 == 0:  # Log every 300 frames (10 seconds at 30fps)
+                    print(f"[INFO] {detector_type.capitalize()} Detector processed {frame_count} frames")
+                    
+        except KeyboardInterrupt:
+            print(f"[INFO] {detector_type.capitalize()} Detector: Stopping detection...")
+        except Exception as e:
+            print(f"[ERROR] Error in {detector_type.capitalize()} Detector: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if cap is not None:
+                cap.release()
+            cv2.destroyAllWindows()
+            # Clean up detector resources
+            if detector_class is not None:
+                detector_class.cleanup()
+            print(f"[INFO] {detector_config.get('detector_type', 'Unknown')} Detector cleanup completed")
+
+    def run_detectors(self):
+        enabled_detectors = ['violence']
+        use_rtsp = False  # Video files do not use RTSP
+        rtsp_url = ""  
+        
+        # Create detector configurations (don't initialize the detector objects here)
+        detector_configs = []
+        
+        for detector_type in enabled_detectors:
+            detector_config = {
+                'detector_type': detector_type,
+                'rtsp_url': rtsp_url,
+                'video_file': self.video_file,
+                'use_rtsp': use_rtsp
+            }
+            detector_configs.append(detector_config)
+            print(f"[INFO] Added {detector_type.capitalize()} Detector to configuration")
+
+        if not detector_configs:
+            print("[ERROR] No detectors configured!")
+            return
+
+        # Create a process for each detector configuration
+        processes = []
+        for detector_config in detector_configs:
+            process = multiprocessing.Process(
+                target=self.display_frame, 
+                args=(detector_config,),
+                name=f"{detector_config['detector_type'].capitalize()}DetectorProcess"
+            )
+            processes.append(process)
+            process.start()
+            print(f"[INFO] Started {detector_config['detector_type'].capitalize()} Detector process (PID: {process.pid})")
+
+        try:
+            print(f"[INFO] Running {len(processes)} detector processes. Press Ctrl+C to stop or 'q' in any window.")
+            # Wait for all processes to complete
+            for process in processes:
+                process.join()
+        except KeyboardInterrupt:
+            print("[INFO] Terminating all processes...")
+            for process in processes:
+                if process.is_alive():
+                    print(f"[INFO] Terminating {process.name}...")
+                    process.terminate()
+            
+            # Wait for processes to terminate gracefully
+            for process in processes:
+                process.join(timeout=5)
+                if process.is_alive():
+                    print(f"[WARNING] Force killing {process.name}...")
+                    process.kill()
+                    process.join()
+        
+        print("[INFO] All detector processes have been stopped.")
         
     def _main_loop(self):
         """Main processing loop with video file priority"""
@@ -513,15 +653,12 @@ class EnhancedDetectionManager:
                 
     def _start_video_processor(self, video_file):
         """Start a processor for a video file"""
-        self.app = MultiDetectionSystem()
         try:
-            print(f"Starting video processor for file: {video_file}")
-            
-            processor = VideoFileProcessor(
-                video_file, self.app, self.device, self, self.video_processor)
-            processor.start()
-            
-            self.active_video_processors[video_file] = processor
+            enabled_detectors = ['violence']
+            use_rtsp = False  # Video files do not use RTSP
+            rtsp_url = ""
+            self.video_file = video_file  # Set the current video file             
+            self.run_detectors()
             
         except Exception as e:
             logger.error(f"Error starting video processor for {video_file}: {str(e)}")
@@ -539,15 +676,15 @@ class EnhancedDetectionManager:
             
     def _start_camera_processor(self, camera):
         """Start a processor for a single camera"""
-        self.app = MultiDetectionSystem()
+        # self.app = MultiDetectionSystem()
         try:
             camera_id = str(camera.id)
             logger.info(f"Starting processor for camera {camera_id} - {camera.name}")
-            processor = EnhancedCameraProcessor(
-                camera, self.app, self.device, self, self.video_processor, self.recording_manager)
-            processor.start()
+            # processor = EnhancedCameraProcessor(
+            #     camera, self.app, self.device, self, self.video_processor, self.recording_manager)
+            # processor.start()
             
-            self.active_cameras[camera_id] = processor
+            # self.active_cameras[camera_id] = processor
             
         except Exception as e:
             logger.error(f"Error starting processor for camera {camera.id}: {str(e)}")
@@ -681,83 +818,84 @@ class EnhancedCameraProcessor:
         """Process a single frame with separated detection types to prevent false positives"""
         try:
             import concurrent.futures
+            print(f"[INFO] Processing frame for camera {self.camera.id} - {self.camera.name} at {fps} FPS")
             
-            # CRITICAL FIX: Separate fire/smoke detection from pose-based detections
-            # Step 1: Check for fire/smoke first (non-person detection)
-            fire_smoke_detected = False
-            fire_smoke_confidence = 0.0
+            # # CRITICAL FIX: Separate fire/smoke detection from pose-based detections
+            # # Step 1: Check for fire/smoke first (non-person detection)
+            # fire_smoke_detected = False
+            # fire_smoke_confidence = 0.0
             
-            try:
-                fire_result = self._run_standard_detection('fire_smoke', frame)
-                if fire_result:
-                    has_fire_detection, fire_confidence, fire_annotated_frame, fire_results = fire_result
-                    if has_fire_detection:
-                        fire_smoke_detected = True
-                        fire_smoke_confidence = fire_confidence
+            # try:
+            #     fire_result = self._run_standard_detection('fire_smoke', frame)
+            #     if fire_result:
+            #         has_fire_detection, fire_confidence, fire_annotated_frame, fire_results = fire_result
+            #         if has_fire_detection:
+            #             fire_smoke_detected = True
+            #             fire_smoke_confidence = fire_confidence
                         
-                        # Create fire/smoke alert immediately
-                        source_id = f"camera_{self.camera.id}"
-                        if self.manager.should_create_alert(source_id, 'fire_smoke'):
-                            logger.info(f"FIRE/SMOKE detected with confidence {fire_confidence:.2f} - Creating alert")
-                            recording_result = self.manager.create_alert_with_recording(
-                                self.camera,
-                                'fire_smoke',
-                                fire_confidence,
-                                fire_results,
-                                fire_annotated_frame
-                            )
+            #             # Create fire/smoke alert immediately
+            #             source_id = f"camera_{self.camera.id}"
+            #             if self.manager.should_create_alert(source_id, 'fire_smoke'):
+            #                 logger.info(f"FIRE/SMOKE detected with confidence {fire_confidence:.2f} - Creating alert")
+            #                 recording_result = self.manager.create_alert_with_recording(
+            #                     self.camera,
+            #                     'fire_smoke',
+            #                     fire_confidence,
+            #                     fire_results,
+            #                     fire_annotated_frame
+            #                 )
                             
-                            if recording_result:
-                                logger.info(f"Successfully started recording for fire/smoke detection")
-                            else:
-                                logger.error(f"Failed to start recording for fire/smoke detection")
-            except Exception as e:
-                logger.error(f"Error in fire/smoke detection: {str(e)}")
+            #                 if recording_result:
+            #                     logger.info(f"Successfully started recording for fire/smoke detection")
+            #                 else:
+            #                     logger.error(f"Failed to start recording for fire/smoke detection")
+            # except Exception as e:
+            #     logger.error(f"Error in fire/smoke detection: {str(e)}")
             
-            # Step 2: ONLY run pose-based detections if NO fire/smoke was detected
-            # This prevents false positives where people near fire are misclassified as choking/falling
-            if not fire_smoke_detected:
-                logger.debug("No fire/smoke detected - proceeding with pose-based detection")
+            # # Step 2: ONLY run pose-based detections if NO fire/smoke was detected
+            # # This prevents false positives where people near fire are misclassified as choking/falling
+            # if not fire_smoke_detected:
+            #     logger.debug("No fire/smoke detected - proceeding with pose-based detection")
                 
-                # Create thread pool for pose-based detections only
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    # Submit pose-based detection tasks only
-                    futures = {
-                        executor.submit(self._run_choking_detection, frame): 'choking',
-                        executor.submit(self._run_standard_detection, 'fall', frame): 'fall',
-                        executor.submit(self._run_standard_detection, 'violence', frame): 'violence'
-                    }
+            #     # Create thread pool for pose-based detections only
+            #     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            #         # Submit pose-based detection tasks only
+            #         futures = {
+            #             executor.submit(self._run_choking_detection, frame): 'choking',
+            #             executor.submit(self._run_standard_detection, 'fall', frame): 'fall',
+            #             executor.submit(self._run_standard_detection, 'violence', frame): 'violence'
+            #         }
                     
-                    # Process pose-based results
-                    for future in concurrent.futures.as_completed(futures):
-                        detector_type = futures[future]
-                        try:
-                            result = future.result()
-                            if result:
-                                has_detection, max_confidence, annotated_frame, results = result
+            #         # Process pose-based results
+            #         for future in concurrent.futures.as_completed(futures):
+            #             detector_type = futures[future]
+            #             try:
+            #                 result = future.result()
+            #                 if result:
+            #                     has_detection, max_confidence, annotated_frame, results = result
                                 
-                                if has_detection:
-                                    # Check if we should create an alert
-                                    source_id = f"camera_{self.camera.id}"
-                                    if self.manager.should_create_alert(source_id, detector_type):
-                                        logger.info(f"Creating alert with recording for {detector_type} detection on camera {self.camera.id}")
-                                        recording_result = self.manager.create_alert_with_recording(
-                                            self.camera,
-                                            detector_type,
-                                            max_confidence,
-                                            results,
-                                            annotated_frame
-                                        )
+            #                     if has_detection:
+            #                         # Check if we should create an alert
+            #                         source_id = f"camera_{self.camera.id}"
+            #                         if self.manager.should_create_alert(source_id, detector_type):
+            #                             logger.info(f"Creating alert with recording for {detector_type} detection on camera {self.camera.id}")
+            #                             recording_result = self.manager.create_alert_with_recording(
+            #                                 self.camera,
+            #                                 detector_type,
+            #                                 max_confidence,
+            #                                 results,
+            #                                 annotated_frame
+            #                             )
                                         
-                                        if recording_result:
-                                            logger.info(f"Successfully started recording for {detector_type} detection")
-                                        else:
-                                            logger.error(f"Failed to start recording for {detector_type} detection")
+            #                             if recording_result:
+            #                                 logger.info(f"Successfully started recording for {detector_type} detection")
+            #                             else:
+            #                                 logger.error(f"Failed to start recording for {detector_type} detection")
                         
-                        except Exception as e:
-                            logger.error(f"Error in {detector_type} detection thread: {str(e)}")
-            else:
-                logger.info(f"Fire/smoke detected with confidence {fire_smoke_confidence:.2f} - SKIPPING pose-based detections to prevent false positives")
+            #             except Exception as e:
+            #                 logger.error(f"Error in {detector_type} detection thread: {str(e)}")
+            # else:
+            #     logger.info(f"Fire/smoke detected with confidence {fire_smoke_confidence:.2f} - SKIPPING pose-based detections to prevent false positives")
                     
         except Exception as e:
             logger.error(f"Error processing frame for camera {self.camera.id}: {str(e)}")
@@ -1242,223 +1380,7 @@ class VideoFileProcessor:
             
         return has_detection, max_confidence
 
-class MultiDetectionSystem:
-    """Main system for multi-threaded detection analysis without UI"""
 
-    def __init__(self):
-        # Initialize analyzers
-        self.analyzers = {
-            'choking': ChokingDetector(),
-            'fall': FallDetector(),
-            'violence': ViolenceDetector()
-        }
-        
-        # Camera and processing variables
-        self.cap = None
-        self.is_running = False
-        
-        # Thread pool for concurrent analysis
-        self.executor = ThreadPoolExecutor(max_workers=3)
-        self.results_queue = queue.Queue()
-        
-        # Detection parameters
-        self.confidence_threshold = 0.5
-        self.alert_threshold = 0.7
-        
-        # Image saving setup
-        self.detection_images_dir = "detection_images"
-        self.setup_image_directories()
-
-    def analyze_frame_concurrent(self, frame, confidence, alert_threshold):
-        """Analyze frame using all three analyzers concurrently"""
-        try:
-            # Submit analysis tasks to thread pool
-            futures = {}
-            for analyzer_type, analyzer in self.analyzers.items():
-                future = self.executor.submit(analyzer.analyze, frame, confidence, alert_threshold)
-                futures[analyzer_type] = future
-            
-            # Collect results
-            results = {}
-            annotated_frames = {}
-            
-            for analyzer_type, future in futures.items():
-                try:
-                    annotated_frame, detection_status = future.result(timeout=5.0)  # 5 second timeout
-                    annotated_frames[analyzer_type] = annotated_frame
-                    results[analyzer_type] = detection_status
-                except Exception as e:
-                    logger.error(f"Error in {analyzer_type} analysis: {e}")
-                    results[analyzer_type] = {
-                        'type': analyzer_type,
-                        'detected': False,
-                        'probability': 0.0,
-                        'state': 'ERROR'
-                    }
-                    annotated_frames[analyzer_type] = frame
-            
-            # Combine annotations from all analyzers
-            combined_frame = self.combine_annotations(frame, annotated_frames, results)
-            
-            return combined_frame, results
-            
-        except Exception as e:
-            logger.error(f"Error in concurrent analysis: {e}")
-            empty_results = {
-                analyzer_type: {
-                    'type': analyzer_type,
-                    'detected': False,
-                    'probability': 0.0,
-                    'state': 'ERROR'
-                }
-                for analyzer_type in self.analyzers.keys()
-            }
-            return frame, empty_results
-
-    def combine_annotations(self, original_frame, annotated_frames, results):
-        """Combine annotations from multiple analyzers"""
-        try:
-            # Start with the first annotated frame that has keypoints drawn
-            combined_frame = next(iter(annotated_frames.values())).copy() if annotated_frames else original_frame.copy()
-            
-            # Draw overall status at the top
-            y_offset = 30
-            for analyzer_type, result in results.items():
-                color = (0, 0, 255) if result['detected'] else (0, 255, 0)
-                text = f"{analyzer_type.upper()}: {result['state']} ({result['probability']:.1%})"
-                cv2.putText(combined_frame, text, (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                y_offset += 25
-            
-            # Add timestamp
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cv2.putText(combined_frame, timestamp, (10, combined_frame.shape[0] - 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            return combined_frame
-            
-        except Exception as e:
-            logger.error(f"Error combining annotations: {e}")
-            return original_frame
-
-    def start_camera(self):
-        """Start camera detection"""
-        if self.cap is None or not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(self.video_file)
-            
-            # Set camera properties
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            
-            # Try different backends if default fails
-            if not self.cap.isOpened():
-                self.cap.release()
-                self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                if not self.cap.isOpened():
-                    self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-                
-        if not self.cap.isOpened():
-            logger.error("Cannot open camera")
-            return False
-        
-        self.is_running = True
-        logger.info("Camera started")
-        return True
-
-    def stop_camera(self):
-        """Stop camera detection"""
-        self.is_running = False
-        if self.cap:
-            self.cap.release()
-        cv2.destroyAllWindows()
-        logger.info("Camera stopped")
-
-    def camera_loop(self):
-        """Main camera processing loop"""
-        frame_skip_counter = 0
-        
-        while self.is_running and self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if not ret:
-                logger.warning("Failed to read frame, attempting to restart camera")
-                self.cap.release()
-                time.sleep(0.1)
-                self.cap = cv2.VideoCapture(self.video_file)
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                continue
-            
-            # Process every nth frame to reduce load
-            print("Processing frame...")
-            frame_skip_counter += 1
-            if frame_skip_counter % 2 == 0:  # Process every 2nd frame
-                annotated_frame, results = self.analyze_frame_concurrent(
-                    frame, self.confidence_threshold, self.alert_threshold
-                )
-                # Check for detections and save images
-                for analyzer_type, result in results.items():
-                    if result['detected']:
-                        print(f"{analyzer_type.upper()} DETECTED: {result['probability']:.2%}")
-                        # Save detection image
-                        self.save_detection_image(annotated_frame, analyzer_type, result['probability'])
-            # Clear buffer
-            for _ in range(int(self.cap.get(cv2.CAP_PROP_BUFFERSIZE)) or 1):
-                self.cap.grab()
-            time.sleep(0.01)
-        self.is_running = False
-
-    def setup_image_directories(self):
-        """Create directories for saving detection images"""
-        try:
-            # Create main detection images directory
-            os.makedirs(self.detection_images_dir, exist_ok=True)
-            
-            # Create subdirectories for each detection type
-            for detection_type in ['choking', 'fall', 'violence']:
-                subdir = os.path.join(self.detection_images_dir, detection_type)
-                os.makedirs(subdir, exist_ok=True)
-            
-            logger.info(f"Image directories created at: {os.path.abspath(self.detection_images_dir)}")
-        except Exception as e:
-            logger.error(f"Error creating image directories: {e}")
-
-    def save_detection_image(self, frame, detection_type, probability):
-        """Save detection image with timestamp and detection info"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
-            filename = f"{detection_type}_{timestamp}_{probability:.2f}.jpg"
-            filepath = os.path.join(self.detection_images_dir, detection_type, filename)
-            print(f"Saving detection image: {filepath}")    
-            # Save the annotated frame
-            cv2.imwrite(filepath, frame)
-            logger.info(f"Detection image saved: {filepath}")
-            return filepath
-        except Exception as e:
-            logger.error(f"Error saving detection image: {e}")
-            return None
-
-    def run_detection_threads(self, video_file):
-        """Run three analyzer threads concurrently"""
-        self.video_file = video_file
-        print("============================>", video_file)
-        if not self.start_camera():
-            print("Failed to start camera")
-            return
-        
-        # Start camera processing in main thread
-        try:
-            self.camera_loop()
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user")
-        finally:
-            self.stop_camera()
-            self.executor.shutdown(wait=False)
-
-    def cleanup(self):
-        """Cleanup resources"""
-        self.stop_camera()
-        self.executor.shutdown(wait=False)
 
 
 # Global instance - replace the original detection manager

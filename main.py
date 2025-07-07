@@ -1,7 +1,6 @@
 import multiprocessing
 import cv2
 from fire_detector_class import FireDetector
-# Uncomment and add other detectors when needed
 from choking_detector_class import ChokingDetector
 from fall_detector_class import FallDetector
 from violence_detector_class import ViolenceDetector
@@ -151,7 +150,7 @@ def run_detectors(rtsp_url, video_file, use_rtsp=False, enabled_detectors=None):
 
 if __name__ == "__main__":
     rtsp_url = "rtsp://admin:@2.55.92.197/play1.sdp"  # Example RTSP stream URL
-    video_file = "video.mp4" 
+    video_file = "./media/testvideo/video.mp4" 
     use_rtsp = False 
     # enabled_detectors = ['fire', 'fall', 'choking', 'violence']  # Enable both fire and 
     

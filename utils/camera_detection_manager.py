@@ -11,7 +11,7 @@ from django.utils import timezone
 import torch
 from cameras.models import Camera
 from alerts.models import Alert
-from detectors import FireSmokeDetector, FallDetector, ViolenceDetector, ChokingDetector
+from detectors import ViolenceDetector
 from utils.model_manager import ModelManager
 from utils.enhanced_video_processor import EnhancedVideoProcessor
 
@@ -32,10 +32,10 @@ class CameraDetectionManager:
         
         # Load all detectors
         self.detectors = {
-            'fire_smoke': FireSmokeDetector(),
-            'fall': FallDetector(),
+            # 'fire_smoke': FireSmokeDetector(),
+            # 'fall': FallDetector(),
             'violence': ViolenceDetector(),
-            'choking': ChokingDetector()
+            # 'choking': ChokingDetector()
         }
         
         # GPU optimization

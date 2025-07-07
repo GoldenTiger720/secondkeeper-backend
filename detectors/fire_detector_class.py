@@ -7,18 +7,19 @@ import subprocess
 from datetime import datetime
 import tensorrt as trt
 import pycuda.driver as cuda
+from django.conf import settings
 # Do NOT import pycuda.autoinit here - we'll manage CUDA context manually
 
-class FireDetector:
+class FireSmokeDetector:
     def __init__(self, rtsp_url, video_file, use_rtsp=False):
         # Parameters for RTSP URL and video file
         self.rtsp_url = rtsp_url
         self.video_file = video_file
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = "./media/detection_clips"
-        self.engine_path = "./models/fire.engine"
-        self.label_binarizer_path = "./models/fire.pickle"
+        self.output_dir = settings.MEDIA_ROOT + "/detection_clips"
+        self.engine_path = settings.MODEL_PATHS['fire_smoke']
+        self.label_binarizer_path = settings.PICKLE_PATHS['fire_smoke']
         self.image_size = 128
         self.fire_label = "FireAndSmoke"
         self.clip_duration_seconds = 5

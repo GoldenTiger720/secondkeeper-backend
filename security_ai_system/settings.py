@@ -230,12 +230,17 @@ SIMPLE_JWT = {
 
 # AI Models paths
 MODEL_PATHS = {
-    'fire_smoke': os.path.join(BASE_DIR, 'models', 'fire_smoke.pt'),
-    'fall': os.path.join(BASE_DIR, 'models', 'fall.pt'),
-    'violence': os.path.join(BASE_DIR, 'models', 'violence.pt'),
-    'choking': os.path.join(BASE_DIR, 'models', 'yolov8m-pose.pt'),
-    'person': os.path.join(BASE_DIR, 'models', 'yolov8m.pt'),
-    'pose_model': os.path.join(BASE_DIR, 'models', 'yolo11m-pose.pt'),
+    'fire_smoke': os.path.join(BASE_DIR, 'models', 'fire.engine'),
+    'fall': os.path.join(BASE_DIR, 'models', 'fall.engine'),
+    'violence': os.path.join(BASE_DIR, 'models', 'violence.engine'),
+    'choking': os.path.join(BASE_DIR, 'models', 'choking.engine'),
+}
+
+PICKLE_PATHS = {
+    'fire_smoke': os.path.join(BASE_DIR, 'models', 'fire.pickle'),
+    'fall': os.path.join(BASE_DIR, 'models', 'fall.pickle'),
+    'violence': os.path.join(BASE_DIR, 'models', 'violence.pickle'),
+    'choking': os.path.join(BASE_DIR, 'models', 'choking.pickle'),
 }
 
 # Video and image storage settings

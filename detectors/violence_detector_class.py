@@ -7,18 +7,20 @@ import subprocess
 from datetime import datetime
 import tensorrt as trt
 import pycuda.driver as cuda
+from django.conf import settings
 # Do NOT import pycuda.autoinit here - we'll manage CUDA context manually
 
 class ViolenceDetector:
-    def __init__(self, rtsp_url, video_file, use_rtsp=False):
+    def __init__(self):
         # Parameters for RTSP URL and video file
-        self.rtsp_url = rtsp_url
-        self.video_file = video_file
-        self.use_rtsp = use_rtsp
+        self.rtsp_url = "rtsp://admin:@2.55.92.197/play1.sdp"
+        self.video_file = "video.mp4"
+        self.use_rtsp = False
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = "./media/detection_clips"
-        self.engine_path = "./models/violence.engine"
-        self.label_binarizer_path = "./models/violence.pickle"
+        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence')
+        self.engine_path = settings.MODEL_PATHS['violence']
+        self.label_binarizer_path = settings.PICKLE_PATHS['violence']
+        print("=========================================>", self.output_dir, self.engine_path, self.label_binarizer_path)
         self.image_size = 128
         self.violence_label = "Violence"
         self.clip_duration_seconds = 5
@@ -42,7 +44,7 @@ class ViolenceDetector:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Initialize components
-        self._initialize_components()
+        # self._initialize_components()
 
     def _check_cuda_availability(self):
         """Check if CUDA is available and properly configured."""

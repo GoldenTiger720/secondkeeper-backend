@@ -1,5 +1,5 @@
 import os
-from detectors import FireSmokeDetector, FallDetector, ViolenceDetector, ChokingDetector
+from detectors import ViolenceDetector
 from django.conf import settings
 import logging
 
@@ -11,14 +11,14 @@ class ModelManager:
     def __init__(self):
         """Initialize the model manager with all available detectors"""
         self.detectors = {
-            "fire_smoke": FireSmokeDetector(),
-            "fall": FallDetector(),
+            # "fire_smoke": FireSmokeDetector(),
+            # "fall": FallDetector(),
             "violence": ViolenceDetector(),
-            "choking": ChokingDetector(),
+            # "choking": ChokingDetector(),
         }
         
         # Current active detector
-        self.active_detector_key = "fire_smoke"
+        self.active_detector_key = "violence"
         
         # Default configuration parameters for each detector
         self.detector_configs = {

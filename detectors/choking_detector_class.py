@@ -7,6 +7,7 @@ from datetime import datetime
 import tensorrt as trt
 import pycuda.driver as cuda
 import subprocess
+from django.conf import settings
 # Do NOT import pycuda.autoinit here - we'll manage CUDA context manually
 
 class ChokingDetector:
@@ -16,9 +17,9 @@ class ChokingDetector:
         self.video_file = video_file
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = "./media/detection_clips"
-        self.engine_path = "./models/choking.engine"
-        self.label_binarizer_path = "./models/choking.pickle"
+        self.output_dir = settings.MEDIA_ROOT + "/detection_clips"
+        self.engine_path = settings.MODEL_PATHS['choking']
+        self.label_binarizer_path = settings.PICKLE_PATHS['choking']
         self.image_size = 128
         self.choking_label = "Choking"
         self.clip_duration_seconds = 20
