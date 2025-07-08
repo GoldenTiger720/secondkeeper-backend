@@ -285,7 +285,7 @@ class ViolenceDetector:
             self.frame_buffer.append(frame)
             if len(self.frame_buffer) > fps * self.cooldown_seconds:
                 self.frame_buffer.pop(0)
-            if label == self.violence_label and confidence >= 0.98:
+            if label == self.violence_label and confidence >= 0.6:
                 self.save_clip(frame, current_time, confidence)
                 print(f"[INFO] Violence detected with confidence: {confidence:.2f}")
                 
@@ -360,7 +360,7 @@ class ViolenceDetector:
             print(f"Error during FFmpeg conversion: {str(e)}")
             return video_path
 
-    def save_clip(self, frame, current_time, confidence=0.98):
+    def save_clip(self, frame, current_time, confidence=0.6):
         try:
             # Check alert cooldown
             if current_time - self.last_alert_time < self.alert_cooldown:

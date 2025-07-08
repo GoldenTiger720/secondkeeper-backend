@@ -294,7 +294,7 @@ class FallDetector:
                 self.frame_buffer.pop(0)
 
             # If fall is detected with high confidence, save clip
-            if label == self.fall_label and confidence >= 0.98:
+            if label == self.fall_label and confidence >= 0.6:
                 self.save_clip(frame, current_time, confidence)
                 print(f"[INFO] Fall detected with confidence: {confidence:.2f}")
                 
@@ -369,7 +369,7 @@ class FallDetector:
             print(f"Error during FFmpeg conversion: {str(e)}")
             return video_path
 
-    def save_clip(self, frame, current_time, confidence=0.98):
+    def save_clip(self, frame, current_time, confidence=0.6):
         """Save video clip when fall is detected."""
         try:
             # Check alert cooldown
