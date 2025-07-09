@@ -221,6 +221,12 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
                 'errors': [str(e)]
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+    @action(detail=True, methods=['post'], url_path='false-positive')
+    def false_positive(self, request, pk=None):
+        """Mark an alert as false positive (alias for mark_false_positive)."""
+        return self.mark_false_positive(request, pk)
+    
+    
     @action(detail=False, methods=['get'])
     def pending_summary(self, request):
         """Get summary of pending alerts for reviewer dashboard."""
@@ -285,6 +291,82 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'data': {},
                 'message': 'Error retrieving pending summary.',
+                'errors': [str(e)]
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReviewerAllAlertsViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for getting all alerts (for /api/alerts/reviewer/all endpoint)."""
+    
+    permission_classes = [permissions.IsAuthenticated, IsReviewerOrAbove]
+    serializer_class = AlertSerializer
+    
+    def get_queryset(self):
+        """Return all alerts for reviewers/admins."""
+        return Alert.objects.all().select_related('camera', 'camera__user', 'resolved_by', 'reviewed_by').order_by('-detection_time')
+    
+    def list(self, request, *args, **kwargs):
+        """Get all alerts from the database for reviewers."""
+        try:
+            user = request.user
+            
+            # Only allow reviewers and admins to access all alerts
+            if not (user.is_reviewer() or user.is_admin()):
+                return Response({
+                    'success': False,
+                    'data': {},
+                    'message': 'Access denied. Reviewer or admin role required.',
+                    'errors': ['Insufficient permissions.']
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Get all alerts from database
+            queryset = self.filter_queryset(self.get_queryset())
+            
+            # Apply optional filters
+            alert_type = request.query_params.get('type')
+            if alert_type:
+                queryset = queryset.filter(alert_type=alert_type)
+            
+            severity = request.query_params.get('severity')
+            if severity:
+                queryset = queryset.filter(severity=severity)
+            
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            
+            camera_id = request.query_params.get('camera_id')
+            if camera_id:
+                queryset = queryset.filter(camera_id=camera_id)
+            
+            # Handle pagination
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                response = self.get_paginated_response(serializer.data)
+                response.data = {
+                    'success': True,
+                    'data': response.data,
+                    'message': 'All alerts retrieved successfully.',
+                    'errors': []
+                }
+                return response
+            
+            # If no pagination, return all results
+            serializer = self.get_serializer(queryset, many=True)
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'message': 'All alerts retrieved successfully.',
+                'errors': []
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting all alerts: {str(e)}")
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Error retrieving all alerts.',
                 'errors': [str(e)]
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

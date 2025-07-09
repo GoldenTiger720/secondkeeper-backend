@@ -3,7 +3,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import AlertViewSet
-from .reviewer_views import ReviewerAlertViewSet, AlertReviewViewSet, ReviewerAssignmentViewSet
+from .reviewer_views import ReviewerAlertViewSet, AlertReviewViewSet, ReviewerAssignmentViewSet, ReviewerAllAlertsViewSet
 
 # Main router for regular alert views
 router = DefaultRouter()
@@ -12,6 +12,7 @@ router.register(r'', AlertViewSet, basename='alert')
 # Reviewer router for reviewer-specific endpoints
 reviewer_router = DefaultRouter()
 reviewer_router.register(r'pending', ReviewerAlertViewSet, basename='reviewer-alert')
+reviewer_router.register(r'all', ReviewerAllAlertsViewSet, basename='reviewer-all-alerts')
 reviewer_router.register(r'reviews', AlertReviewViewSet, basename='alert-review')
 reviewer_router.register(r'assignments', ReviewerAssignmentViewSet, basename='reviewer-assignment')
 
@@ -39,7 +40,10 @@ urlpatterns = [
 # POST   /api/alerts/reviewer/pending/{id}/confirm/      - Confirm alert as true positive
 # POST   /api/alerts/reviewer/pending/{id}/dismiss/      - Dismiss alert as not actionable
 # POST   /api/alerts/reviewer/pending/{id}/mark_false_positive/ - Mark as false positive
+# POST   /api/alerts/reviewer/pending/{id}/false-positive/     - Mark as false positive (alias)
 # GET    /api/alerts/reviewer/pending/pending_summary/   - Get reviewer dashboard summary
+#
+# GET    /api/alerts/reviewer/all/                       - Get all alerts from database (reviewers/admins)
 #
 # GET    /api/alerts/reviewer/reviews/                   - List alert reviews
 # GET    /api/alerts/reviewer/reviews/{id}/              - Get specific review
