@@ -23,11 +23,21 @@ class FallDetector:
         self.label_binarizer_path = settings.PICKLE_PATHS['fall']
         self.image_size = 128
         self.fall_label = "Fall"
-        self.clip_duration_seconds = 5
+        self.clip_duration_seconds = 10
         self.cooldown_seconds = 2
         self.last_clip_saved_time = 0
-        self.thumbnail_saved = False
         self.frame_buffer = []
+        self.detection_active = False
+        self.detection_frames = []
+        self.first_detection_frame = None
+        
+        # Check if this is a test video from media/testvideo folder
+        self.is_test_video = False
+        if not self.use_rtsp and self.video_file:
+            test_video_dir = os.path.join(settings.MEDIA_ROOT, 'testvideo')
+            if os.path.abspath(self.video_file).startswith(os.path.abspath(test_video_dir)):
+                self.is_test_video = True
+                print(f"[INFO] Detected test video: {self.video_file}")
         
         # Camera and database settings
         self.camera_id = camera_id
@@ -62,6 +72,30 @@ class FallDetector:
     def _initialize_camera(self):
         """Initialize camera object if camera_id is provided"""
         from cameras.models import Camera
+        
+        # For test videos, create or get a special test camera
+        if self.is_test_video:
+            print("[INFO] Test video detected - creating/getting test camera")
+            try:
+                self.camera, created = Camera.objects.get_or_create(
+                    name="TEST VIDEO CAMERA - Fall Detection",
+                    stream_url="file://test_video_fall",
+                    defaults={
+                        'user_id': 1,  # Default admin user
+                        'status': 'online',
+                        'detection_enabled': True,
+                        'fall_detection': True
+                    }
+                )
+                if created:
+                    print("[INFO] Created test camera for test video processing")
+                else:
+                    print("[INFO] Using existing test camera for test video processing")
+                return
+            except Exception as e:
+                print(f"[ERROR] Failed to create test camera: {e}")
+                self.camera = None
+                return
         
         if self.camera_id:
             try:
@@ -289,14 +323,34 @@ class FallDetector:
             confidence = float(preds[pred_idx])
             current_time = time.time()
             
-            self.frame_buffer.append(frame)
-            if len(self.frame_buffer) > fps * self.cooldown_seconds:
+            # Maintain frame buffer for video clips
+            self.frame_buffer.append(frame.copy())
+            max_buffer_size = fps * self.clip_duration_seconds
+            if len(self.frame_buffer) > max_buffer_size:
                 self.frame_buffer.pop(0)
 
-            # If fall is detected with high confidence, save clip
+            # Check for fall detection
             if label == self.fall_label and confidence >= 0.6:
-                self.save_clip(frame, current_time, confidence)
-                print(f"[INFO] Fall detected with confidence: {confidence:.2f}")
+                if not self.detection_active:
+                    # Start new detection sequence
+                    self.detection_active = True
+                    self.first_detection_frame = frame.copy()
+                    self.detection_frames = list(self.frame_buffer)  # Copy current buffer as starting point
+                    print(f"[INFO] Fall detection started with confidence: {confidence:.2f}")
+                
+                # Continue adding frames during detection
+                self.detection_frames.append(frame.copy())
+                
+                # Save clip immediately when detection occurs
+                self.save_clip_on_detection(current_time, confidence)
+                
+            else:
+                # Reset detection state when no detection
+                if self.detection_active:
+                    print(f"[INFO] Fall detection ended")
+                    self.detection_active = False
+                    self.detection_frames = []
+                    self.first_detection_frame = None
                 
             # Draw detection info on frame
             color = (0, 0, 255) if label == self.fall_label else (0, 255, 0)
@@ -369,56 +423,75 @@ class FallDetector:
             print(f"Error during FFmpeg conversion: {str(e)}")
             return video_path
 
-    def save_clip(self, frame, current_time, confidence=0.6):
-        """Save video clip when fall is detected."""
-        try:
-            # Check alert cooldown
-            if current_time - self.last_alert_time < self.alert_cooldown:
-                return
+    def save_clip_on_detection(self, current_time, confidence):
+        """Save video clip when fall is detected"""
+        # Check cooldowns
+        if current_time - self.last_alert_time < self.alert_cooldown:
+            return
+        if current_time - self.last_clip_saved_time < self.cooldown_seconds:
+            return
             
+        # Use detection frames or fall back to buffer
+        frames_to_save = self.detection_frames if self.detection_frames else self.frame_buffer
+        if not frames_to_save:
+            print("[WARNING] No frames to save for fall detection")
+            return
+            
+        thumbnail_frame = self.first_detection_frame if self.first_detection_frame is not None else frames_to_save[0]
+        
+        try:
+            self.save_clip(thumbnail_frame, frames_to_save, current_time, confidence)
+        except Exception as e:
+            print(f"[ERROR] Failed to save fall detection clip: {e}")
+    
+    def save_clip(self, thumbnail_frame, frames_to_save, detection_time, confidence=0.6):
+        """Save video clip and thumbnail, then create alert"""
+        try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Save thumbnail
             thumbnail_path = os.path.join(self.output_dir, f"fall_thumbnail_{timestamp}.jpg")
-            cv2.imwrite(thumbnail_path, frame)
+            success = cv2.imwrite(thumbnail_path, thumbnail_frame)
+            if not success:
+                print(f"[ERROR] Failed to save thumbnail: {thumbnail_path}")
+                return
             print(f"[INFO] Saved thumbnail: {thumbnail_path}")
 
-            # Check cooldown before saving clip
-            if current_time - self.last_clip_saved_time > self.cooldown_seconds:
-                output_path = os.path.join(self.output_dir, f"fall_{timestamp}.mp4")
+            # Save video clip
+            output_path = os.path.join(self.output_dir, f"fall_{timestamp}.mp4")
+            fps = 30
+            height, width = thumbnail_frame.shape[:2]
+            
+            clip_writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+            if not clip_writer.isOpened():
+                print(f"[ERROR] Cannot open video writer for {output_path}")
+                return
 
-                # Open video writer to save the clip
-                fps = 30  # Assuming the FPS is 30, adjust as needed
-                width = frame.shape[1]
-                height = frame.shape[0]
-                clip_writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-
-                if not clip_writer.isOpened():
-                    print(f"[ERROR] Cannot open video writer for {output_path}")
-                    return
-
-                for buf_frame in self.frame_buffer:
-                    clip_writer.write(buf_frame)
-                clip_writer.release()
-                self.last_clip_saved_time = current_time
-                
-                # Convert to web compatible format
-                web_compatible_path = self.convert_to_web_compatible(output_path)
-                if web_compatible_path != output_path and os.path.exists(web_compatible_path):
-                    try:
-                        os.remove(output_path)  # Remove original file
-                        video_path = web_compatible_path
-                    except:
-                        video_path = output_path
-                else:
-                    video_path = output_path
-                
-                self.frame_buffer.clear()
-                print(f"[INFO] Saved clip to {video_path}")
-                
-                # Create alert in database
-                self._create_alert(video_path, thumbnail_path, confidence, timestamp)
-                self.last_alert_time = current_time
+            # Write frames to video
+            print(f"[INFO] Writing {len(frames_to_save)} frames to video clip")
+            for frame in frames_to_save:
+                clip_writer.write(frame)
+            clip_writer.release()
+            
+            # Convert to web compatible format
+            web_compatible_path = self.convert_to_web_compatible(output_path)
+            if web_compatible_path != output_path and os.path.exists(web_compatible_path):
+                try:
+                    os.remove(output_path)
+                    final_video_path = web_compatible_path
+                except:
+                    final_video_path = output_path
+            else:
+                final_video_path = output_path
+            
+            print(f"[INFO] Saved video clip: {final_video_path}")
+            
+            # Create alert in database
+            self._create_alert(final_video_path, thumbnail_path, confidence, timestamp)
+            
+            # Update timers
+            self.last_clip_saved_time = detection_time
+            self.last_alert_time = detection_time
                 
         except Exception as e:
             print(f"[ERROR] Error saving clip: {e}")
@@ -430,6 +503,36 @@ class FallDetector:
         from alerts.models import Alert
         
         try:
+            # For test videos, create alert with test camera and mark as test
+            if self.is_test_video:
+                print("[INFO] Creating alert for test video with test camera")
+                if not self.camera:
+                    print("[WARNING] No test camera available, skipping alert creation")
+                    return None
+                    
+                # Get relative paths for database storage
+                video_relative_path = os.path.relpath(video_path, settings.MEDIA_ROOT)
+                thumbnail_relative_path = os.path.relpath(thumbnail_path, settings.MEDIA_ROOT)
+                
+                # Create alert with test camera
+                with transaction.atomic():
+                    alert = Alert.objects.create(
+                        title="TEST Fall Detection (Video File)",
+                        description=f"Test video detection of fall with {confidence:.2f} confidence. Video: {os.path.basename(self.video_file)}",
+                        alert_type='fall',
+                        severity=self._determine_alert_severity(confidence),
+                        confidence=confidence,
+                        camera=self.camera,  # Use test camera
+                        location=f"Test Video: {os.path.basename(self.video_file)}",
+                        video_file=video_relative_path,
+                        thumbnail=thumbnail_relative_path,
+                        status='pending_review',
+                        is_test=True,  # Mark as test alert
+                        notes=f"Test video detection. File: {self.video_file}. Timestamp: {timestamp}"
+                    )
+                    print(f"[INFO] Alert {alert.id} created successfully for test video fall detection")
+                    return alert
+                    
             if not self.camera:
                 print("[WARNING] No camera configured, skipping alert creation")
                 return None
@@ -488,6 +591,12 @@ class FallDetector:
     def cleanup(self):
         """Clean up resources when done."""
         try:
+            # Save any remaining detection if we were in the middle of detecting
+            if self.detection_active and self.detection_frames:
+                print(f"[INFO] Saving remaining detection with {len(self.detection_frames)} frames during cleanup")
+                thumbnail_frame = self.first_detection_frame if self.first_detection_frame is not None else self.detection_frames[0]
+                self.save_clip(thumbnail_frame, self.detection_frames, time.time(), 0.6)
+            
             if self.d_input:
                 self.d_input.free()
             if self.d_output:

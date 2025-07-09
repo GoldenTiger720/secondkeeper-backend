@@ -10,6 +10,7 @@ import torch
 from datetime import datetime
 from django.conf import settings
 from django.utils import timezone
+from django.db import models
 from cameras.models import Camera
 from detectors.fire_detector_class import FireSmokeDetector
 from detectors.choking_detector_class import ChokingDetector
@@ -108,13 +109,26 @@ class EnhancedDetectionManager:
             fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Check if this is a test video
+            is_test_video = False
+            if not detector_config['use_rtsp'] and detector_config.get('video_file'):
+                test_video_dir = os.path.join(settings.MEDIA_ROOT, 'testvideo')
+                if os.path.abspath(detector_config['video_file']).startswith(os.path.abspath(test_video_dir)):
+                    is_test_video = True
+                    print(f"[INFO] {detector_type.capitalize()} Detector: Processing test video with {total_frames} frames")
             
             frame_count = 0
             while not (stop_event and stop_event.is_set()):
                 ret, frame = cap.read()
                 if not ret:
-                    # If it's a video file, loop it
-                    if not detector_config['use_rtsp']:
+                    # For test videos, stop when reaching the end
+                    if is_test_video:
+                        print(f"[INFO] {detector_type.capitalize()} Detector: Test video completed after {frame_count} frames")
+                        break
+                    # If it's a regular video file, loop it
+                    elif not detector_config['use_rtsp']:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
                     else:
@@ -123,6 +137,12 @@ class EnhancedDetectionManager:
 
                 frame = detector_class.process_frame(frame, fps)
                 frame_count += 1
+                
+                # For test videos, check if we've reached the total frames
+                if is_test_video and frame_count >= total_frames:
+                    print(f"[INFO] {detector_type.capitalize()} Detector: Reached end of test video ({frame_count}/{total_frames} frames)")
+                    break
+                    
                 if frame_count % 300 == 0:  # Log every 300 frames (10 seconds at 30fps)
                     print(f"[INFO] {detector_type.capitalize()} Detector processed {frame_count} frames")
                 time.sleep(0.01)
@@ -265,11 +285,23 @@ class EnhancedDetectionManager:
                 
     def _process_camera_streams(self):
         """Process camera streams when no video files are present"""
-        # Get online cameras from database
-        online_cameras = Camera.objects.filter(
+        # Get all online cameras first for logging
+        all_online_cameras = Camera.objects.filter(
             status='online',
             detection_enabled=True
+        )
+        
+        # Get online cameras from database with valid stream URLs (rtsp:// or http://)
+        online_cameras = all_online_cameras.filter(
+            models.Q(stream_url__istartswith='rtsp://') | 
+            models.Q(stream_url__istartswith='http://')
         ).select_related('user')
+        
+        # Log filtering results
+        total_cameras = all_online_cameras.count()
+        filtered_cameras = online_cameras.count()
+        if total_cameras != filtered_cameras:
+            logger.info(f"Filtered {total_cameras} cameras to {filtered_cameras} with valid stream URLs (rtsp:// or http://)")
         
         current_camera_ids = set(self.active_cameras.keys())
         new_camera_ids = set(str(cam.id) for cam in online_cameras)
