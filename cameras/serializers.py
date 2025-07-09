@@ -6,14 +6,14 @@ class CameraSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Camera
-        fields = '__all__'
+        exclude = ('username', 'password')
         read_only_fields = ('id', 'user', 'status', 'stream_url', 'last_online', 'created_at', 'updated_at')
 
 class CameraCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating a new camera."""
     class Meta:
         model = Camera
-        exclude = ('user', 'status', 'last_online')
+        exclude = ('user', 'status', 'last_online', 'username', 'password')
 
     def validate_stream_url(self, value):
         """
@@ -42,7 +42,7 @@ class CameraUpdateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Camera
-        exclude = ('user', 'status', 'last_online', 'created_at', 'updated_at')
+        exclude = ('user', 'status', 'last_online', 'created_at', 'updated_at', 'username', 'password')
     def validate_stream_url(self, value):
         """
         Validate that a stream URL is provided and not already registered by another camera

@@ -126,7 +126,6 @@ class CameraViewSet(viewsets.ModelViewSet):
 
     def _check_camera_connection(self, camera):
         try:
-            print("ssssssssssssssssssssssssssssssss")
             stream_url = camera.get_stream_url()
             cap = cv2.VideoCapture(stream_url)
             if cap.isOpened():
