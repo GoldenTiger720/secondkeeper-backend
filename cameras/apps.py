@@ -17,7 +17,6 @@ class CamerasConfig(AppConfig):
         # and not during migrations or management commands
         import os
         import sys
-        print(os.environ.get('RUN_MAIN'))
         
         # Check if this is the main Django process
         if (os.environ.get('RUN_MAIN') == 'true' or 
