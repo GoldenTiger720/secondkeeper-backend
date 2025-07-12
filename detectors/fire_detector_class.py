@@ -330,7 +330,7 @@ class FireSmokeDetector:
                 self.frame_buffer.pop(0)
 
             # Check for fire detection
-            if label == self.fire_label and confidence >= 0.98:
+            if label == self.fire_label and confidence >= 0.9:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True

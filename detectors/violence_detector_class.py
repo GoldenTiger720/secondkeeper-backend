@@ -323,7 +323,7 @@ class ViolenceDetector:
                 self.frame_buffer.pop(0)
 
             # Check for violence detection
-            if label == self.violence_label and confidence >= 0.6:
+            if label == self.violence_label and confidence >= 0.8:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True
