@@ -322,6 +322,8 @@ class FireSmokeDetector:
             label = self.lb.classes_[pred_idx]
             confidence = float(preds[pred_idx])
             current_time = time.time()
+
+            print("label:", label, "confidence:", confidence)
             
             # Maintain frame buffer for video clips
             self.frame_buffer.append(frame.copy())
