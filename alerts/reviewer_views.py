@@ -300,6 +300,7 @@ class ReviewerAllAlertsViewSet(viewsets.ReadOnlyModelViewSet):
     
     permission_classes = [permissions.IsAuthenticated, IsReviewerOrAbove]
     serializer_class = AlertSerializer
+    pagination_class = None  # Disable pagination to return all alerts
     
     def get_queryset(self):
         """Return all alerts for reviewers/admins."""
@@ -339,20 +340,7 @@ class ReviewerAllAlertsViewSet(viewsets.ReadOnlyModelViewSet):
             if camera_id:
                 queryset = queryset.filter(camera_id=camera_id)
             
-            # Handle pagination
-            page = self.paginate_queryset(queryset)
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                response = self.get_paginated_response(serializer.data)
-                response.data = {
-                    'success': True,
-                    'data': response.data,
-                    'message': 'All alerts retrieved successfully.',
-                    'errors': []
-                }
-                return response
-            
-            # If no pagination, return all results
+            # Return all results (pagination disabled)
             serializer = self.get_serializer(queryset, many=True)
             return Response({
                 'success': True,
