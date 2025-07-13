@@ -3,32 +3,27 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from alerts.models import Alert, AlertReview
-from .serializers import AlertTrainingDataSerializer
-from django.db.models import Prefetch
+from .serializers import AlertReviewTrainingDataSerializer
+from django.db.models import Prefetch, Count
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_training_data(request):
     """
-    Get all alert review data for training purposes.
+    Get all alert review data for training purposes from the AlertReview table.
     
     Query Parameters:
     - alert_type: Filter by alert type (fire_smoke, fall, violence, choking)
     """
     alert_type = request.query_params.get('alert_type', None)
     
-    # Build query with optimized prefetch
-    queryset = Alert.objects.select_related(
-        'camera',
-        'camera__user',
-        'resolved_by',
-        'reviewed_by'
-    ).prefetch_related(
-        Prefetch(
-            'review_history',
-            queryset=AlertReview.objects.select_related('reviewer')
-        )
+    # Build query from AlertReview table with optimized prefetch
+    queryset = AlertReview.objects.select_related(
+        'alert',
+        'alert__camera',
+        'alert__camera__user',
+        'reviewer'
     )
     
     # Apply alert_type filter if provided
@@ -38,13 +33,13 @@ def get_training_data(request):
                 {'error': 'Invalid alert_type. Must be one of: fire_smoke, fall, violence, choking'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        queryset = queryset.filter(alert_type=alert_type)
+        queryset = queryset.filter(alert__alert_type=alert_type)
     
-    # Order by detection time (newest first)
-    queryset = queryset.order_by('-detection_time')
+    # Order by review time (newest first)
+    queryset = queryset.order_by('-review_time')
     
     # Serialize the data
-    serializer = AlertTrainingDataSerializer(queryset, many=True)
+    serializer = AlertReviewTrainingDataSerializer(queryset, many=True)
     
     # Prepare response data
     response_data = {
@@ -53,14 +48,25 @@ def get_training_data(request):
         'data': serializer.data
     }
     
-    # Add statistics
+    # Add statistics based on review actions
     stats = {
-        'total_alerts': queryset.count(),
-        'confirmed': queryset.filter(status='confirmed').count(),
-        'dismissed': queryset.filter(status='dismissed').count(),
-        'false_positive': queryset.filter(status='false_positive').count(),
-        'pending_review': queryset.filter(status='pending_review').count()
+        'total_reviews': queryset.count(),
+        'confirmed': queryset.filter(action='confirmed').count(),
+        'dismissed': queryset.filter(action='dismissed').count(),
+        'false_positive': queryset.filter(action='false_positive').count(),
+        'escalated': queryset.filter(action='escalated').count()
     }
+    
+    # Add alert type breakdown if no specific type was requested
+    if not alert_type:
+        alert_type_stats = queryset.values('alert__alert_type').annotate(
+            count=Count('id')
+        ).order_by('alert__alert_type')
+        stats['by_alert_type'] = {
+            item['alert__alert_type']: item['count'] 
+            for item in alert_type_stats
+        }
+    
     response_data['statistics'] = stats
     
     return Response(response_data, status=status.HTTP_200_OK)
