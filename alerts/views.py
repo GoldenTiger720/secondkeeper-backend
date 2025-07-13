@@ -287,3 +287,196 @@ class AlertViewSet(viewsets.ModelViewSet):
                 'message': 'Error retrieving video file.',
                 'errors': [str(e)]
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def destroy(self, request, pk=None):
+        """Delete a single alert and all its related data including files."""
+        from notifications.models import NotificationLog
+        from django.db import transaction
+        
+        try:
+            alert = self.get_object()
+            alert_id = alert.id
+            
+            with transaction.atomic():
+                files_deleted = {'videos': 0, 'thumbnails': 0}
+                file_errors = []
+                
+                # Delete related NotificationLog entries
+                notification_logs_deleted = NotificationLog.objects.filter(alert=alert).count()
+                NotificationLog.objects.filter(alert=alert).delete()
+                
+                # Delete video file if exists
+                if alert.video_file:
+                    try:
+                        video_path = os.path.join(settings.MEDIA_ROOT, str(alert.video_file))
+                        if os.path.exists(video_path):
+                            os.remove(video_path)
+                            files_deleted['videos'] += 1
+                            logger.info(f"Deleted video file: {video_path}")
+                    except Exception as e:
+                        file_errors.append(f"Failed to delete video: {str(e)}")
+                        logger.error(f"Failed to delete video file {video_path}: {str(e)}")
+                
+                # Delete thumbnail file if exists
+                if alert.thumbnail:
+                    try:
+                        thumbnail_path = os.path.join(settings.MEDIA_ROOT, str(alert.thumbnail))
+                        if os.path.exists(thumbnail_path):
+                            os.remove(thumbnail_path)
+                            files_deleted['thumbnails'] += 1
+                            logger.info(f"Deleted thumbnail file: {thumbnail_path}")
+                    except Exception as e:
+                        file_errors.append(f"Failed to delete thumbnail: {str(e)}")
+                        logger.error(f"Failed to delete thumbnail file {thumbnail_path}: {str(e)}")
+                
+                # Delete the alert (this will cascade to AlertReview due to foreign key)
+                alert.delete()
+                
+                logger.info(f"Deleted alert {alert_id} and {notification_logs_deleted} related notification logs")
+                
+                response_data = {
+                    'success': True,
+                    'data': {
+                        'deleted_alert_id': alert_id,
+                        'files_deleted': files_deleted
+                    },
+                    'message': 'Alert and all related data deleted successfully.',
+                    'errors': file_errors if file_errors else []
+                }
+                
+                if file_errors:
+                    response_data['message'] += f' However, {len(file_errors)} file(s) could not be deleted.'
+                
+                return Response(response_data, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Error deleting alert {pk}: {str(e)}")
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Error occurred while deleting alert.',
+                'errors': [str(e)]
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'], url_path='delete-multiple')
+    def delete_multiple(self, request):
+        """Delete multiple alerts and their related data."""
+        from notifications.models import NotificationLog
+        from django.db import transaction
+        
+        alert_ids = request.data.get('alert_ids', [])
+        
+        # Validate input
+        if not alert_ids:
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'No alert IDs provided.',
+                'errors': ['alert_ids field is required and cannot be empty.']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not isinstance(alert_ids, list):
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'alert_ids must be an array.',
+                'errors': ['alert_ids must be a list of integers.']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate that all IDs are integers
+        try:
+            alert_ids = [int(alert_id) for alert_id in alert_ids]
+        except (ValueError, TypeError):
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Invalid alert ID format.',
+                'errors': ['All alert IDs must be valid integers.']
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get queryset based on user permissions
+        base_queryset = self.get_queryset()
+        alerts_to_delete = base_queryset.filter(id__in=alert_ids)
+        
+        # Check if all requested alerts exist and user has permission to delete them
+        found_ids = list(alerts_to_delete.values_list('id', flat=True))
+        not_found_ids = [aid for aid in alert_ids if aid not in found_ids]
+        
+        if not_found_ids:
+            return Response({
+                'success': False,
+                'data': {'not_found_ids': not_found_ids},
+                'message': f'Some alerts not found or you do not have permission to delete them.',
+                'errors': [f'Alert IDs not found or no permission: {not_found_ids}']
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            with transaction.atomic():
+                deleted_count = 0
+                files_deleted = {'videos': 0, 'thumbnails': 0}
+                file_errors = []
+                
+                for alert in alerts_to_delete:
+                    alert_id = alert.id
+                    
+                    # Delete related NotificationLog entries
+                    notification_logs_deleted = NotificationLog.objects.filter(alert=alert).count()
+                    NotificationLog.objects.filter(alert=alert).delete()
+                    
+                    # Delete video file if exists
+                    if alert.video_file:
+                        try:
+                            video_path = os.path.join(settings.MEDIA_ROOT, str(alert.video_file))
+                            if os.path.exists(video_path):
+                                os.remove(video_path)
+                                files_deleted['videos'] += 1
+                                logger.info(f"Deleted video file: {video_path}")
+                        except Exception as e:
+                            file_errors.append(f"Failed to delete video for alert {alert_id}: {str(e)}")
+                            logger.error(f"Failed to delete video file {video_path}: {str(e)}")
+                    
+                    # Delete thumbnail file if exists
+                    if alert.thumbnail:
+                        try:
+                            thumbnail_path = os.path.join(settings.MEDIA_ROOT, str(alert.thumbnail))
+                            if os.path.exists(thumbnail_path):
+                                os.remove(thumbnail_path)
+                                files_deleted['thumbnails'] += 1
+                                logger.info(f"Deleted thumbnail file: {thumbnail_path}")
+                        except Exception as e:
+                            file_errors.append(f"Failed to delete thumbnail for alert {alert_id}: {str(e)}")
+                            logger.error(f"Failed to delete thumbnail file {thumbnail_path}: {str(e)}")
+                    
+                    # Delete related AlertReview entries (will be handled by CASCADE)
+                    # The Alert model has review_history with CASCADE delete
+                    
+                    # Delete the alert (this will cascade to AlertReview due to foreign key)
+                    alert.delete()
+                    deleted_count += 1
+                    
+                    logger.info(f"Deleted alert {alert_id} and {notification_logs_deleted} related notification logs")
+                
+                response_data = {
+                    'success': True,
+                    'data': {
+                        'deleted_count': deleted_count,
+                        'deleted_alert_ids': found_ids,
+                        'files_deleted': files_deleted
+                    },
+                    'message': f'Successfully deleted {deleted_count} alerts and their related data.',
+                    'errors': file_errors if file_errors else []
+                }
+                
+                if file_errors:
+                    response_data['message'] += f' However, {len(file_errors)} file(s) could not be deleted.'
+                
+                return Response(response_data, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Error deleting alerts {alert_ids}: {str(e)}")
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Error occurred while deleting alerts.',
+                'errors': [str(e)]
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
