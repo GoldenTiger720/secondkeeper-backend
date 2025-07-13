@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'faces',
     'notifications',
     'admin_panel',
+    'training',
 ]
 
 MIDDLEWARE = [

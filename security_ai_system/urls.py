@@ -27,6 +27,7 @@ urlpatterns = [
     # API endpoints
     path('api/auth/', include('accounts.urls')),
     path('api/cameras/', include('cameras.urls')),
+    path('api/alerts/training/', include('training.urls')),  # Must come before alerts.urls
     path('api/alerts/', include('alerts.urls')),
     path('api/faces/', include('faces.urls')),
     path('api/notifications/', include('notifications.urls')),
