@@ -331,7 +331,7 @@ class FallDetector:
             # print("label:", label, "confidence:", confidence)
 
             # Check for fall detection
-            if label == self.fall_label and confidence >= 0.8:
+            if label == self.fall_label and confidence >= 0.98:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True
