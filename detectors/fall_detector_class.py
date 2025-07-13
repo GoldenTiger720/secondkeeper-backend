@@ -328,7 +328,7 @@ class FallDetector:
             max_buffer_size = fps * self.clip_duration_seconds
             if len(self.frame_buffer) > max_buffer_size:
                 self.frame_buffer.pop(0)
-            print("label:", label, "confidence:", confidence)
+            # print("label:", label, "confidence:", confidence)
 
             # Check for fall detection
             if label == self.fall_label and confidence >= 0.8:

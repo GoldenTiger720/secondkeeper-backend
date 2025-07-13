@@ -322,7 +322,7 @@ class ChokingDetector:
             confidence = float(preds[pred_idx])
             current_time = time.time()
 
-            print("label:", label, "confidence:", confidence)
+            # print("label:", label, "confidence:", confidence)
             
             # Maintain frame buffer for video clips
             self.frame_buffer.append(frame.copy())

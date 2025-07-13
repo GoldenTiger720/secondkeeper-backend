@@ -10,7 +10,7 @@ from .serializers import (
     CameraSerializer, CameraCreateSerializer, CameraUpdateSerializer,
     CameraStatusSerializer, CameraListSerializer, CameraSettingsSerializer
 )
-from utils.permissions import IsOwnerOrAdmin
+from utils.permissions import IsOwnerOrAdmin, IsManagerOrAdminOrReviewer
 from utils.stream_proxy import start_camera_stream, stop_all_streams
 logger = logging.getLogger('security_ai')
 
@@ -144,14 +144,74 @@ class CameraViewSet(viewsets.ModelViewSet):
             logger.error(f"Error checking camera connection: {camera.id} - {camera.name} - {str(e)}")
             return 'error'
     
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[])
     def stream(self, request, pk=None):
-        """Get camera livestream URL for HLS streaming."""
+        """Get camera livestream URL for HLS streaming or direct MP4 streaming for RTSP."""
         try:
+            # Handle token authentication from URL parameter
+            token = request.query_params.get('token')
+            auth_header = request.headers.get('Authorization')
+            
+            # If user is not authenticated, try token from URL parameter or header
+            if not request.user.is_authenticated:
+                from rest_framework_simplejwt.authentication import JWTAuthentication
+                from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+                
+                jwt_token = None
+                
+                # Try URL parameter first, then Authorization header
+                if token:
+                    jwt_token = token
+                elif auth_header and auth_header.startswith('Bearer '):
+                    jwt_token = auth_header.split(' ')[1]
+                
+                if jwt_token:
+                    try:
+                        jwt_auth = JWTAuthentication()
+                        validated_token = jwt_auth.get_validated_token(jwt_token)
+                        user = jwt_auth.get_user(validated_token)
+                        
+                        # Set authenticated user for this request
+                        request.user = user
+                        request.auth = validated_token
+                        
+                    except (InvalidToken, TokenError) as e:
+                        return Response({
+                            'success': False,
+                            'data': {},
+                            'message': f'Invalid or expired token: {str(e)}',
+                            'errors': ['Authentication failed']
+                        }, status=status.HTTP_401_UNAUTHORIZED)
+                else:
+                    return Response({
+                        'success': False,
+                        'data': {},
+                        'message': 'Authentication required',
+                        'errors': ['No token provided']
+                    }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Check permissions (admin, manager, or reviewer roles only)
+            if not hasattr(request.user, 'role') or request.user.role not in ['admin', 'manager', 'reviewer']:
+                return Response({
+                    'success': False,
+                    'data': {},
+                    'message': 'Permission denied',
+                    'errors': ['Insufficient permissions - admin, manager, or reviewer role required']
+                }, status=status.HTTP_403_FORBIDDEN)
+            
             camera = self.get_object()
             quality = request.query_params.get('quality', 'medium')
             print(camera.id, camera.name, camera.status)
             
+            # Check if camera URL is RTSP for direct streaming
+            if camera.stream_url.startswith('rtsp://'):
+                # Import the RTSP streaming function
+                from utils.rtsp_stream import create_rtsp_streaming_response
+                
+                # Return direct streaming response
+                return create_rtsp_streaming_response(camera)
+            
+            # For non-RTSP URLs, use HLS streaming
             # Create and start stream proxy
             result = start_camera_stream(camera, target_fps=15)
             
