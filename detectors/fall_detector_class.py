@@ -18,7 +18,8 @@ class FallDetector:
         self.video_file = video_file if video_file else "video.mp4"
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fall')
+        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fall', "fall")
+        self.nonfall_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fall', "nonfall")
         self.engine_path = settings.MODEL_PATHS['fall']
         self.label_binarizer_path = settings.PICKLE_PATHS['fall']
         self.image_size = 128
@@ -62,7 +63,8 @@ class FallDetector:
         
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
-        
+        os.makedirs(self.nonfall_dir, exist_ok=True)
+
         # Initialize camera if camera_id provided
         self._initialize_camera()
         
@@ -331,7 +333,7 @@ class FallDetector:
             # print("label:", label, "confidence:", confidence)
 
             # Check for fall detection
-            if label == self.fall_label and confidence >= 0.98:
+            if label == self.fall_label and confidence >= 0.6:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True

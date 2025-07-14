@@ -18,7 +18,8 @@ class FireSmokeDetector:
         self.video_file = video_file if video_file else "video.mp4"
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fire')
+        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fire', "fire")
+        self.nonfire_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'fire', "nonfire")
         self.engine_path = settings.MODEL_PATHS['fire_smoke']
         self.label_binarizer_path = settings.PICKLE_PATHS['fire_smoke']
         self.image_size = 128
@@ -62,7 +63,8 @@ class FireSmokeDetector:
         
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
-        
+        os.makedirs(self.nonfire_dir, exist_ok=True)
+
         # Initialize camera if camera_id provided
         self._initialize_camera()
         
@@ -332,7 +334,7 @@ class FireSmokeDetector:
                 self.frame_buffer.pop(0)
 
             # Check for fire detection
-            if label == self.fire_label and confidence >= 0.98:
+            if label == self.fire_label and confidence >= 0.6:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True

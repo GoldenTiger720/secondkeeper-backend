@@ -18,7 +18,8 @@ class ViolenceDetector:
         self.video_file = video_file if video_file else "video.mp4"
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence')
+        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence','violence')
+        self.nonviolence_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'violence', "nonviolence")
         self.engine_path = settings.MODEL_PATHS['violence']
         self.label_binarizer_path = settings.PICKLE_PATHS['violence']
         self.image_size = 128
@@ -62,7 +63,8 @@ class ViolenceDetector:
         
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
-        
+        os.makedirs(self.nonviolence_dir, exist_ok=True)
+
         # Initialize camera if camera_id provided
         self._initialize_camera()
         
@@ -325,7 +327,7 @@ class ViolenceDetector:
                 self.frame_buffer.pop(0)
 
             # Check for violence detection
-            if label == self.violence_label and confidence >= 0.98:
+            if label == self.violence_label and confidence >= 0.6:
                 if not self.detection_active:
                     # Start new detection sequence
                     self.detection_active = True

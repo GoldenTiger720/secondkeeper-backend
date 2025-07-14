@@ -18,7 +18,8 @@ class ChokingDetector:
         self.video_file = video_file if video_file else "video.mp4"
         self.use_rtsp = use_rtsp
         self.source = self.rtsp_url if self.use_rtsp else self.video_file
-        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'choking')
+        self.output_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'choking', "choking")
+        self.nonchoking_dir = os.path.join(settings.MEDIA_ROOT, 'alert_videos', 'choking', "nonchoking")
         self.engine_path = settings.MODEL_PATHS['choking']
         self.label_binarizer_path = settings.PICKLE_PATHS['choking']
         self.image_size = 128
@@ -62,6 +63,7 @@ class ChokingDetector:
         
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.nonchoking_dir, exist_ok=True)
         
         # Initialize camera if camera_id provided
         self._initialize_camera()
