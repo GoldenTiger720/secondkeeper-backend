@@ -33,6 +33,7 @@ urlpatterns = [
 # PUT    /api/alerts/{id}/status/        - Update alert status
 # GET    /api/alerts/summary/            - Get alert summary statistics
 # GET    /api/alerts/{id}/video/         - Get alert video file
+# GET    /api/alerts/training/?alert_type={type} - Get training data for specified alert type
 #
 # Reviewer Workflow Endpoints:
 # GET    /api/alerts/reviewer/pending/                    - List pending alerts for review

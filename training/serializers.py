@@ -2,6 +2,7 @@ from rest_framework import serializers
 from alerts.models import Alert, AlertReview
 from cameras.serializers import CameraSerializer
 from accounts.serializers import UserSerializer
+from .models import TrainingFire, TrainingChoking, TrainingFall, TrainingViolence, TrainingResult
 
 
 class AlertReviewTrainingDataSerializer(serializers.ModelSerializer):
@@ -130,3 +131,33 @@ class AlertTrainingDataSerializer(serializers.ModelSerializer):
             'updated_at',
             'review_history'
         ]
+
+
+class TrainingFireSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrainingFire
+        fields = ['id', 'image_type', 'image_url']
+
+
+class TrainingChokingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrainingChoking
+        fields = ['id', 'image_type', 'image_url']
+
+
+class TrainingFallSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrainingFall
+        fields = ['id', 'image_type', 'image_url']
+
+
+class TrainingViolenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrainingViolence
+        fields = ['id', 'image_type', 'image_url']
+
+
+class TrainingResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TrainingResult
+        fields = ['id', 'training_type', 'accuracy', 'loss', 'success', 'created_at']

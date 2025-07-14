@@ -18,6 +18,7 @@ from .serializers import (
 )
 from utils.permissions import IsReviewerOrAbove, IsAdminUser
 from training.models import TrainingFire, TrainingChoking, TrainingFall, TrainingViolence
+from training.serializers import TrainingFireSerializer, TrainingChokingSerializer, TrainingFallSerializer, TrainingViolenceSerializer
 
 User = get_user_model()
 logger = logging.getLogger('security_ai')
@@ -790,5 +791,98 @@ class ReviewerAssignmentViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'data': {},
                 'message': 'Error retrieving reviewer workload.',
+                'errors': [str(e)]
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TrainingDataViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for retrieving training data based on alert type."""
+    
+    permission_classes = [permissions.IsAuthenticated, IsReviewerOrAbove]
+    
+    def get_queryset(self):
+        """Return training data based on alert_type parameter."""
+        # Handle both DRF request and Django request
+        if hasattr(self.request, 'query_params'):
+            alert_type = self.request.query_params.get('alert_type')
+        else:
+            alert_type = self.request.GET.get('alert_type')
+        
+        if alert_type == 'fire_smoke':
+            return TrainingFire.objects.all()
+        elif alert_type == 'fall':
+            return TrainingFall.objects.all()
+        elif alert_type == 'choking':
+            return TrainingChoking.objects.all()
+        elif alert_type == 'violence':
+            return TrainingViolence.objects.all()
+        else:
+            # Return empty queryset if invalid alert_type
+            return TrainingFire.objects.none()
+    
+    def get_serializer_class(self):
+        """Return appropriate serializer based on alert_type parameter."""
+        # Handle both DRF request and Django request
+        if hasattr(self.request, 'query_params'):
+            alert_type = self.request.query_params.get('alert_type')
+        else:
+            alert_type = self.request.GET.get('alert_type')
+        
+        if alert_type == 'fire_smoke':
+            return TrainingFireSerializer
+        elif alert_type == 'fall':
+            return TrainingFallSerializer
+        elif alert_type == 'choking':
+            return TrainingChokingSerializer
+        elif alert_type == 'violence':
+            return TrainingViolenceSerializer
+        else:
+            # Default to fire serializer
+            return TrainingFireSerializer
+    
+    def list(self, request, *args, **kwargs):
+        """Get training data for specified alert type."""
+        try:
+            # Handle both DRF request and Django request
+            if hasattr(request, 'query_params'):
+                alert_type = request.query_params.get('alert_type')
+            else:
+                alert_type = request.GET.get('alert_type')
+            
+            if not alert_type:
+                return Response({
+                    'success': False,
+                    'data': {},
+                    'message': 'alert_type parameter is required.',
+                    'errors': ['Missing alert_type parameter.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Validate alert_type
+            valid_alert_types = ['fire_smoke', 'fall', 'choking', 'violence']
+            if alert_type not in valid_alert_types:
+                return Response({
+                    'success': False,
+                    'data': {},
+                    'message': f'Invalid alert_type. Must be one of: {", ".join(valid_alert_types)}',
+                    'errors': ['Invalid alert_type parameter.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get training data
+            queryset = self.filter_queryset(self.get_queryset())
+            serializer = self.get_serializer(queryset, many=True)
+            
+            return Response({
+                'success': True,
+                'data': serializer.data,
+                'message': f'Training data for {alert_type} retrieved successfully.',
+                'errors': []
+            })
+            
+        except Exception as e:
+            logger.error(f"Error retrieving training data: {str(e)}")
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Error retrieving training data.',
                 'errors': [str(e)]
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
