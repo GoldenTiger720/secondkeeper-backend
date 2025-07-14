@@ -7,6 +7,9 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 import logging
+import os
+import shutil
+from django.conf import settings
 
 from .models import Alert, AlertReview, ReviewerAssignment
 from .serializers import (
@@ -14,9 +17,202 @@ from .serializers import (
     AlertStatusUpdateSerializer
 )
 from utils.permissions import IsReviewerOrAbove, IsAdminUser
+from training.models import TrainingFire, TrainingChoking, TrainingFall, TrainingViolence
 
 User = get_user_model()
 logger = logging.getLogger('security_ai')
+
+def move_image_to_datasets(alert):
+    """
+    Move thumbnail image to appropriate Datasets folder based on alert type.
+    Returns the new file path if successful, None if failed.
+    """
+    if not alert.thumbnail or not alert.thumbnail.name:
+        logger.warning(f"No thumbnail found for alert {alert.id}")
+        return None
+    
+    try:
+        # Get the current thumbnail path
+        current_path = alert.thumbnail.path
+        
+        # Check if the file exists
+        if not os.path.exists(current_path):
+            logger.warning(f"Thumbnail file not found at {current_path} for alert {alert.id}")
+            return None
+        
+        # Define dataset paths based on alert type
+        datasets_mapping = {
+            'fire_smoke': 'fire/NonFire',
+            'fall': 'fall/NonFall', 
+            'choking': 'choking/NonChoking',
+            'violence': 'violence/NonViolence'
+        }
+        
+        if alert.alert_type not in datasets_mapping:
+            logger.warning(f"Alert type {alert.alert_type} not supported for dataset training")
+            return None
+        
+        # Build destination path
+        datasets_base = os.path.join(settings.MEDIA_ROOT, 'Datasets')
+        destination_dir = os.path.join(datasets_base, datasets_mapping[alert.alert_type])
+        
+        # Create destination directory if it doesn't exist
+        os.makedirs(destination_dir, exist_ok=True)
+        
+        # Get filename from original path
+        filename = os.path.basename(current_path)
+        destination_path = os.path.join(destination_dir, filename)
+        
+        # Move the file (cut, not copy)
+        shutil.copy2(current_path, destination_path)
+        
+        # Return the relative path for database storage
+        relative_path = os.path.relpath(destination_path, settings.MEDIA_ROOT)
+        logger.info(f"Moved thumbnail for alert {alert.id} to {relative_path}")
+        
+        return relative_path
+        
+    except Exception as e:
+        logger.error(f"Error moving thumbnail for alert {alert.id}: {str(e)}")
+        return None
+
+def create_training_record(alert, moved_file_path):
+    """
+    Create a training record in the appropriate training table.
+    """
+    try:
+        # Define image types for each alert type
+        image_type_mapping = {
+            'fire_smoke': 'NonFire',
+            'fall': 'NonFall',
+            'choking': 'NonChoking', 
+            'violence': 'NonViolence'
+        }
+        
+        # Define model mapping
+        model_mapping = {
+            'fire_smoke': TrainingFire,
+            'fall': TrainingFall,
+            'choking': TrainingChoking,
+            'violence': TrainingViolence
+        }
+        
+        if alert.alert_type not in model_mapping:
+            logger.warning(f"Alert type {alert.alert_type} not supported for training record")
+            return False
+        
+        # Get the appropriate model and image type
+        model_class = model_mapping[alert.alert_type]
+        image_type = image_type_mapping[alert.alert_type]
+        
+        # Create the training record
+        training_record = model_class.objects.create(
+            image_type=image_type,
+            image_url=moved_file_path
+        )
+        
+        logger.info(f"Created training record {training_record.id} for alert {alert.id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating training record for alert {alert.id}: {str(e)}")
+        return False
+
+def copy_image_to_positive_datasets(alert):
+    """
+    Copy thumbnail image to appropriate positive Datasets folder based on alert type.
+    Returns the new file path if successful, None if failed.
+    """
+    if not alert.thumbnail or not alert.thumbnail.name:
+        logger.warning(f"No thumbnail found for alert {alert.id}")
+        return None
+    
+    try:
+        # Get the current thumbnail path
+        current_path = alert.thumbnail.path
+        
+        # Check if the file exists
+        if not os.path.exists(current_path):
+            logger.warning(f"Thumbnail file not found at {current_path} for alert {alert.id}")
+            return None
+        
+        # Define dataset paths based on alert type (positive folders)
+        datasets_mapping = {
+            'fire_smoke': 'fire/Fire',
+            'fall': 'fall/Fall', 
+            'choking': 'choking/Choking',
+            'violence': 'violence/Violence'
+        }
+        
+        if alert.alert_type not in datasets_mapping:
+            logger.warning(f"Alert type {alert.alert_type} not supported for positive dataset training")
+            return None
+        
+        # Build destination path
+        datasets_base = os.path.join(settings.MEDIA_ROOT, 'Datasets')
+        destination_dir = os.path.join(datasets_base, datasets_mapping[alert.alert_type])
+        
+        # Create destination directory if it doesn't exist
+        os.makedirs(destination_dir, exist_ok=True)
+        
+        # Get filename from original path
+        filename = os.path.basename(current_path)
+        destination_path = os.path.join(destination_dir, filename)
+        
+        # Copy the file (not move, since we want to keep the original)
+        shutil.copy2(current_path, destination_path)
+        
+        # Return the relative path for database storage
+        relative_path = os.path.relpath(destination_path, settings.MEDIA_ROOT)
+        logger.info(f"Copied thumbnail for alert {alert.id} to {relative_path}")
+        
+        return relative_path
+        
+    except Exception as e:
+        logger.error(f"Error copying thumbnail for alert {alert.id}: {str(e)}")
+        return None
+
+def create_positive_training_record(alert, copied_file_path):
+    """
+    Create a positive training record in the appropriate training table.
+    """
+    try:
+        # Define image types for each alert type (positive classes)
+        image_type_mapping = {
+            'fire_smoke': 'Fire',
+            'fall': 'Fall',
+            'choking': 'Choking', 
+            'violence': 'Violence'
+        }
+        
+        # Define model mapping
+        model_mapping = {
+            'fire_smoke': TrainingFire,
+            'fall': TrainingFall,
+            'choking': TrainingChoking,
+            'violence': TrainingViolence
+        }
+        
+        if alert.alert_type not in model_mapping:
+            logger.warning(f"Alert type {alert.alert_type} not supported for positive training record")
+            return False
+        
+        # Get the appropriate model and image type
+        model_class = model_mapping[alert.alert_type]
+        image_type = image_type_mapping[alert.alert_type]
+        
+        # Create the training record
+        training_record = model_class.objects.create(
+            image_type=image_type,
+            image_url=copied_file_path
+        )
+        
+        logger.info(f"Created positive training record {training_record.id} for alert {alert.id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error creating positive training record for alert {alert.id}: {str(e)}")
+        return False
 
 class ReviewerAlertViewSet(viewsets.ModelViewSet):
     """ViewSet for reviewers to manage pending alerts."""
@@ -83,7 +279,7 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
-        """Confirm an alert as true positive."""
+        """Confirm an alert as true positive and copy image to positive training dataset."""
         try:
             alert = self.get_object()
             
@@ -100,6 +296,14 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
             if notes:
                 alert.reviewer_notes = notes
             
+            # Copy thumbnail image to positive Datasets folder
+            copied_file_path = copy_image_to_positive_datasets(alert)
+            
+            training_record_created = False
+            if copied_file_path:
+                # Create positive training record in appropriate table
+                training_record_created = create_positive_training_record(alert, copied_file_path)
+            
             # Mark as confirmed and send notification to user
             alert.mark_as_confirmed(request.user, send_notification=True)
             
@@ -113,10 +317,18 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
             
             logger.info(f"Alert {alert.id} confirmed by reviewer {request.user.id}")
             
+            response_message = 'Alert confirmed and user notified.'
+            if copied_file_path and training_record_created:
+                response_message += ' Image copied to positive training dataset.'
+            elif copied_file_path:
+                response_message += ' Image copied but training record creation failed.'
+            elif alert.thumbnail:
+                response_message += ' Failed to copy image to training dataset.'
+            
             return Response({
                 'success': True,
                 'data': AlertSerializer(alert).data,
-                'message': 'Alert confirmed and user notified.',
+                'message': response_message,
                 'errors': []
             })
             
@@ -223,8 +435,65 @@ class ReviewerAlertViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'], url_path='false-positive')
     def false_positive(self, request, pk=None):
-        """Mark an alert as false positive (alias for mark_false_positive)."""
-        return self.mark_false_positive(request, pk)
+        """Mark an alert as false positive and move image to training dataset."""
+        try:
+            alert = self.get_object()
+            
+            if alert.status != 'pending_review':
+                return Response({
+                    'success': False,
+                    'data': {},
+                    'message': 'Alert is not pending review.',
+                    'errors': ['Invalid alert status.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get reviewer notes
+            notes = request.data.get('notes', '')
+            
+            # Move thumbnail image to Datasets folder
+            moved_file_path = move_image_to_datasets(alert)
+            
+            training_record_created = False
+            if moved_file_path:
+                # Create training record in appropriate table
+                training_record_created = create_training_record(alert, moved_file_path)
+            
+            # Mark as false positive
+            alert.mark_as_false_positive(request.user, notes)
+            
+            # Create review record
+            AlertReview.objects.create(
+                alert=alert,
+                reviewer=request.user,
+                action='false_positive',
+                notes=notes
+            )
+            
+            logger.info(f"Alert {alert.id} marked as false positive by reviewer {request.user.id}")
+            
+            response_message = 'Alert marked as false positive.'
+            if moved_file_path and training_record_created:
+                response_message += ' Image moved to training dataset.'
+            elif moved_file_path:
+                response_message += ' Image moved but training record creation failed.'
+            elif alert.thumbnail:
+                response_message += ' Failed to move image to training dataset.'
+            
+            return Response({
+                'success': True,
+                'data': AlertSerializer(alert).data,
+                'message': response_message,
+                'errors': []
+            })
+            
+        except Exception as e:
+            logger.error(f"Error marking alert as false positive: {str(e)}")
+            return Response({
+                'success': False,
+                'data': {},
+                'message': 'Error marking alert as false positive.',
+                'errors': [str(e)]
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     
     @action(detail=False, methods=['get'])
