@@ -358,6 +358,33 @@ class AlertViewSet(viewsets.ModelViewSet):
                 'errors': [str(e)]
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+    @action(detail=False, methods=['get'])
+    def recent(self, request):
+        """Get recent alerts with optional limit parameter."""
+        queryset = self.get_queryset()
+        
+        # Get limit parameter, default to 4 as requested
+        limit = request.query_params.get('limit', '4')
+        try:
+            limit = int(limit)
+            if limit <= 0:
+                limit = 4
+        except (ValueError, TypeError):
+            limit = 4
+        
+        # Filter for confirmed alerts and order by detection_time descending
+        recent_alerts = queryset.filter(status='confirmed').order_by('-detection_time')[:limit]
+        
+        # Use AlertListSerializer for consistent response format
+        serializer = AlertListSerializer(recent_alerts, many=True)
+        
+        return Response({
+            'success': True,
+            'data': serializer.data,
+            'message': f'Recent {len(serializer.data)} alerts retrieved successfully.',
+            'errors': []
+        })
+
     @action(detail=False, methods=['post'], url_path='delete-multiple')
     def delete_multiple(self, request):
         """Delete multiple alerts and their related data."""

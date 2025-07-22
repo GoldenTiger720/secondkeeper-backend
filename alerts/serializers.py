@@ -48,7 +48,7 @@ class AlertListSerializer(serializers.ModelSerializer):
         model = Alert
         fields = (
             'id', 'title', 'alert_type', 'status', 'severity',
-            'confidence', 'detection_time', 'camera_name', 'user_name',
+            'confidence', 'detection_time', 'camera_name', 'user_name', 'video_file',
             'thumbnail', 'time_since_detection', 'is_pending_review'
         )
         read_only_fields = fields
