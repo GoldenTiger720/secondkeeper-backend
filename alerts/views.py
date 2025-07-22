@@ -360,7 +360,10 @@ class AlertViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def recent(self, request):
-        """Get recent alerts with optional limit parameter."""
+        """Get recent alerts with optional limit parameter and user's cameras."""
+        from cameras.models import Camera
+        from cameras.serializers import CameraListSerializer
+        
         queryset = self.get_queryset()
         
         # Get limit parameter, default to 4 as requested
@@ -375,13 +378,26 @@ class AlertViewSet(viewsets.ModelViewSet):
         # Filter for confirmed alerts and order by detection_time descending
         recent_alerts = queryset.filter(status='confirmed').order_by('-detection_time')[:limit]
         
-        # Use AlertListSerializer for consistent response format
-        serializer = AlertListSerializer(recent_alerts, many=True)
+        # Get all cameras registered by the user
+        user = request.user
+        if user.is_admin():
+            # Admin users can see all cameras
+            user_cameras = Camera.objects.all()
+        else:
+            # Regular users can only see their own cameras
+            user_cameras = Camera.objects.filter(user=user)
+        
+        # Use serializers for consistent response format
+        alerts_serializer = AlertListSerializer(recent_alerts, many=True)
+        cameras_serializer = CameraListSerializer(user_cameras, many=True)
         
         return Response({
             'success': True,
-            'data': serializer.data,
-            'message': f'Recent {len(serializer.data)} alerts retrieved successfully.',
+            'data': {
+                'alerts': alerts_serializer.data,
+                'cameras': cameras_serializer.data
+            },
+            'message': f'Recent {len(alerts_serializer.data)} alerts and {len(cameras_serializer.data)} cameras retrieved successfully.',
             'errors': []
         })
 
