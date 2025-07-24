@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 import cv2
 import logging
+import subprocess
 
 from .models import Camera
 from .serializers import (
@@ -127,6 +128,12 @@ class CameraViewSet(viewsets.ModelViewSet):
     def _check_camera_connection(self, camera):
         try:
             stream_url = camera.get_stream_url()
+            
+            # Use ffmpeg for RTSP URLs, similar to the GET stream endpoint
+            if stream_url.startswith('rtsp://'):
+                return self._check_rtsp_connection_with_ffmpeg(camera, stream_url)
+            
+            # Use OpenCV for non-RTSP URLs
             cap = cv2.VideoCapture(stream_url)
             if cap.isOpened():
                 ret, _ = cap.read()
@@ -142,6 +149,52 @@ class CameraViewSet(viewsets.ModelViewSet):
                 return 'offline'
         except Exception as e:
             logger.error(f"Error checking camera connection: {camera.id} - {camera.name} - {str(e)}")
+            return 'error'
+    
+    def _check_rtsp_connection_with_ffmpeg(self, camera, stream_url):
+        """Check RTSP camera connection using ffmpeg."""
+        try:
+            # Build ffmpeg command to test RTSP connection
+            # This command tries to connect and read a few frames
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-rtsp_transport", "tcp",
+                "-i", stream_url,
+                "-frames:v", "1",  # Read only 1 frame
+                "-f", "null",  # Discard output
+                "-"  # Output to stdout
+            ]
+            
+            logger.info(f"Testing RTSP connection for camera {camera.id}: {camera.name}")
+            logger.info(f"FFmpeg command: {' '.join(ffmpeg_cmd)}")
+            
+            # Run ffmpeg with timeout
+            process = subprocess.run(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10  # 10 second timeout
+            )
+            
+            # Check if ffmpeg succeeded
+            if process.returncode == 0:
+                logger.info(f"RTSP camera connection successful: {camera.id} - {camera.name}")
+                return 'online'
+            else:
+                # Parse stderr to determine if it's offline or error
+                stderr_output = process.stderr.decode('utf-8', errors='ignore')
+                if "Connection refused" in stderr_output or "No route to host" in stderr_output:
+                    logger.warning(f"Failed to connect to RTSP camera: {camera.id} - {camera.name}")
+                    return 'offline'
+                else:
+                    logger.warning(f"RTSP camera error: {camera.id} - {camera.name} - {stderr_output}")
+                    return 'error'
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"RTSP connection timeout for camera: {camera.id} - {camera.name}")
+            return 'offline'
+        except Exception as e:
+            logger.error(f"Error checking RTSP camera connection: {camera.id} - {camera.name} - {str(e)}")
             return 'error'
     
     @action(detail=True, methods=['get'], permission_classes=[])
